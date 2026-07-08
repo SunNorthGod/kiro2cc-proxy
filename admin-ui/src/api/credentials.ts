@@ -20,6 +20,9 @@ import type {
   CredentialDaySummary,
   ThrottleLogsResponse,
   FailureLogsResponse,
+  StartDeviceLoginRequest,
+  DeviceLoginStartResponse,
+  DeviceLoginPollResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -100,6 +103,24 @@ export async function deleteCredential(id: number): Promise<SuccessResponse> {
 // 更新凭据
 export async function updateCredential(id: number, req: UpdateCredentialRequest): Promise<SuccessResponse> {
   const { data } = await api.put<SuccessResponse>(`/credentials/${id}`, req)
+  return data
+}
+
+// 发起设备授权登录（SSO）
+export async function startDeviceLogin(
+  req: StartDeviceLoginRequest
+): Promise<DeviceLoginStartResponse> {
+  const { data } = await api.post<DeviceLoginStartResponse>('/device-login/start', req)
+  return data
+}
+
+// 轮询设备授权登录状态
+export async function pollDeviceLogin(
+  sessionId: string
+): Promise<DeviceLoginPollResponse> {
+  const { data } = await api.post<DeviceLoginPollResponse>('/device-login/poll', {
+    sessionId,
+  })
   return data
 }
 

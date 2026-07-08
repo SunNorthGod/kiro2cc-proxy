@@ -22,6 +22,11 @@ pub struct ApiKey {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spending_limit: Option<f64>,
+    /// 额度限制（真实 Kiro credits），None 表示不按 credits 限额。
+    /// 与 spending_limit 相互独立，可同时设置；任一超限即拒绝。
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_limit: Option<f64>,
     /// 有效期天数（懒激活模式），首次使用后才开始计时
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -42,11 +47,13 @@ fn default_enabled() -> bool {
 
 impl ApiKey {
     /// 生成新的 API Key
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u32,
         name: String,
         expires_at: Option<DateTime<Utc>>,
         spending_limit: Option<f64>,
+        credit_limit: Option<f64>,
         duration_days: Option<f64>,
         bound_credential_ids: Option<Vec<u64>>,
     ) -> Self {
@@ -58,6 +65,7 @@ impl ApiKey {
             created_at: Utc::now(),
             expires_at,
             spending_limit,
+            credit_limit,
             duration_days,
             activated_at: None,
             bound_credential_ids,
@@ -119,6 +127,7 @@ pub enum ApiKeyAuthResult {
         id: u32,
         name: String,
         spending_limit: Option<f64>,
+        credit_limit: Option<f64>,
         bound_credential_ids: Option<Vec<u64>>,
     },
     /// Key 已被禁用
@@ -180,6 +189,7 @@ impl ApiKeyManager {
                         id: api_key.id,
                         name: api_key.name.clone(),
                         spending_limit: api_key.spending_limit,
+                        credit_limit: api_key.credit_limit,
                         bound_credential_ids: api_key.bound_credential_ids.clone(),
                     }
                 }
@@ -197,6 +207,7 @@ impl ApiKeyManager {
                 id: api_key.id,
                 name: api_key.name.clone(),
                 spending_limit: api_key.spending_limit,
+                credit_limit: api_key.credit_limit,
                 bound_credential_ids: api_key.bound_credential_ids.clone(),
             },
             None => ApiKeyAuthResult::NotFound,
@@ -208,11 +219,13 @@ impl ApiKeyManager {
     }
 
     /// 创建新 key
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
         name: String,
         expires_at: Option<DateTime<Utc>>,
         spending_limit: Option<f64>,
+        credit_limit: Option<f64>,
         duration_days: Option<f64>,
         bound_credential_ids: Option<Vec<u64>>,
     ) -> anyhow::Result<ApiKey> {
@@ -223,6 +236,7 @@ impl ApiKeyManager {
             name,
             expires_at,
             spending_limit,
+            credit_limit,
             duration_days,
             bound_credential_ids,
         );
@@ -241,6 +255,7 @@ impl ApiKeyManager {
         enabled: Option<bool>,
         expires_at: Option<Option<DateTime<Utc>>>,
         spending_limit: Option<Option<f64>>,
+        credit_limit: Option<Option<f64>>,
         duration_days: Option<Option<f64>>,
         bound_credential_ids: Option<Option<Vec<u64>>>,
     ) -> anyhow::Result<Option<ApiKey>> {
@@ -259,6 +274,9 @@ impl ApiKeyManager {
         }
         if let Some(spending_limit) = spending_limit {
             api_key.spending_limit = spending_limit;
+        }
+        if let Some(credit_limit) = credit_limit {
+            api_key.credit_limit = credit_limit;
         }
         if let Some(duration_days) = duration_days {
             match duration_days {

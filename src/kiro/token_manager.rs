@@ -424,6 +424,212 @@ pub(crate) async fn get_usage_limits(
     Ok(data)
 }
 
+/// 调用 ListAvailableProfiles 获取账号的 profileArn（Enterprise/IdC 账号必需）。
+///
+/// 端点：`POST https://codewhisperer.{region}.amazonaws.com/ListAvailableProfiles`
+/// （body `{}`，Bearer token）。返回第一个可用 profile 的 ARN，无 profile 时返回 None。
+pub(crate) async fn list_available_profiles(
+    credentials: &KiroCredentials,
+    config: &Config,
+    token: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<Option<String>> {
+    let region = credentials.effective_api_region(config);
+    let host = format!("codewhisperer.{}.amazonaws.com", region);
+    let url = format!("https://{}/ListAvailableProfiles", host);
+    let machine_id = machine_id::generate_from_credentials(credentials, config).unwrap_or_default();
+    let kiro_version = &config.kiro_version;
+    let user_agent = format!(
+        "aws-sdk-js/1.0.0 ua/2.1 os/darwin#24.6.0 lang/js md/nodejs#22.21.1 \
+         api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
+        kiro_version, machine_id
+    );
+    let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-{}-{}", kiro_version, machine_id);
+    let client = build_client(proxy, 30, config.tls_backend)?;
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/x-amz-json-1.0")
+        .header("x-amz-user-agent", &amz_user_agent)
+        .header("User-Agent", &user_agent)
+        .header("host", &host)
+        .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+        .header("amz-sdk-request", "attempt=1; max=1")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Connection", "close")
+        .body("{}")
+        .send()
+        .await?;
+    let status = response.status();
+    let body_text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("ListAvailableProfiles 失败: {} {}", status, body_text);
+    }
+    let json: serde_json::Value = serde_json::from_str(&body_text)?;
+    let arn = json
+        .get("profiles")
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.iter().find_map(|p| p.get("arn").and_then(|a| a.as_str())))
+        .map(|s| s.to_string());
+    Ok(arn)
+}
+
+// ============================================================================
+// 设备授权登录（AWS SSO OIDC device authorization grant）
+// ============================================================================
+
+/// 设备授权登录使用的 scopes（CodeWhisperer / Kiro）
+const DEVICE_LOGIN_SCOPES: [&str; 2] = ["codewhisperer:completions", "codewhisperer:analysis"];
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterClientResponse {
+    client_id: String,
+    client_secret: String,
+}
+
+/// 注册一个 OIDC 公共客户端，返回 (clientId, clientSecret)
+async fn register_client(
+    config: &Config,
+    region: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<(String, String)> {
+    let url = format!("https://oidc.{}.amazonaws.com/client/register", region);
+    let client = build_client(proxy, 30, config.tls_backend)?;
+    let body = serde_json::json!({
+        "clientName": format!("kiro2cc-proxy-{}", uuid::Uuid::new_v4()),
+        "clientType": "public",
+        "scopes": DEVICE_LOGIN_SCOPES,
+    });
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("x-amz-user-agent", IDC_AMZ_USER_AGENT)
+        .header("User-Agent", "node")
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("RegisterClient 失败: {} {}", status, text);
+    }
+    let data: RegisterClientResponse = serde_json::from_str(&text)?;
+    Ok((data.client_id, data.client_secret))
+}
+
+/// StartDeviceAuthorization 响应
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartDeviceAuthorizationResponse {
+    device_code: String,
+    user_code: String,
+    #[serde(default)]
+    verification_uri: String,
+    #[serde(default)]
+    verification_uri_complete: String,
+    #[serde(default)]
+    expires_in: i64,
+    #[serde(default)]
+    interval: i64,
+}
+
+/// 发起设备授权，返回设备码/用户码/验证链接
+async fn start_device_authorization(
+    config: &Config,
+    region: &str,
+    client_id: &str,
+    client_secret: &str,
+    start_url: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<StartDeviceAuthorizationResponse> {
+    let url = format!("https://oidc.{}.amazonaws.com/device_authorization", region);
+    let client = build_client(proxy, 30, config.tls_backend)?;
+    let body = serde_json::json!({
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "startUrl": start_url,
+    });
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("x-amz-user-agent", IDC_AMZ_USER_AGENT)
+        .header("User-Agent", "node")
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("StartDeviceAuthorization 失败: {} {}", status, text);
+    }
+    let data: StartDeviceAuthorizationResponse = serde_json::from_str(&text)?;
+    Ok(data)
+}
+
+/// CreateToken（设备码授权）轮询结果
+enum DeviceTokenOutcome {
+    /// 用户尚未完成授权，继续等待
+    Pending,
+    /// 授权完成
+    Complete { refresh_token: Option<String> },
+    /// 失败（过期/拒绝等）
+    Failed(String),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTokenResponse {
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+/// 轮询一次 CreateToken（设备码授权）
+async fn create_token_device(
+    config: &Config,
+    region: &str,
+    client_id: &str,
+    client_secret: &str,
+    device_code: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<DeviceTokenOutcome> {
+    let url = format!("https://oidc.{}.amazonaws.com/token", region);
+    let client = build_client(proxy, 30, config.tls_backend)?;
+    let body = serde_json::json!({
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "grantType": "urn:ietf:params:oauth:grant-type:device_code",
+        "deviceCode": device_code,
+    });
+    let resp = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("x-amz-user-agent", IDC_AMZ_USER_AGENT)
+        .header("User-Agent", "node")
+        .json(&body)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if status.is_success() {
+        let data: CreateTokenResponse = serde_json::from_str(&text)?;
+        return Ok(DeviceTokenOutcome::Complete {
+            refresh_token: data.refresh_token,
+        });
+    }
+    let err_code = serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.as_str())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    match err_code.as_str() {
+        "authorization_pending" | "slow_down" => Ok(DeviceTokenOutcome::Pending),
+        _ => Ok(DeviceTokenOutcome::Failed(format!("{} {}", status, text))),
+    }
+}
+
 // ============================================================================
 // 多账号 Token 管理器
 // ============================================================================
@@ -609,6 +815,20 @@ pub struct MultiTokenManager {
     sticky_misses: AtomicU64,
     /// 持久化串行锁：串行化 credentials/stats 的序列化+写盘，避免多路径并发交错写
     persist_lock: Mutex<()>,
+    /// 已尝试自动获取 profileArn 的账号 ID（内存态，避免每次请求重复调用 ListAvailableProfiles）
+    profile_arn_attempted: Mutex<std::collections::HashSet<u64>>,
+    /// 进行中的设备授权登录会话（sessionId -> 会话）
+    device_login_sessions: Mutex<HashMap<String, DeviceLoginSession>>,
+}
+
+/// 进行中的设备授权登录会话
+struct DeviceLoginSession {
+    client_id: String,
+    client_secret: String,
+    device_code: String,
+    region: String,
+    created_at: Instant,
+    expires_in: i64,
 }
 
 /// 每个账号最大 API 调用失败次数
@@ -766,6 +986,8 @@ impl MultiTokenManager {
             sticky_hits: AtomicU64::new(0),
             sticky_misses: AtomicU64::new(0),
             persist_lock: Mutex::new(()),
+            profile_arn_attempted: Mutex::new(std::collections::HashSet::new()),
+            device_login_sessions: Mutex::new(HashMap::new()),
         };
 
         // 如果有新分配的 ID 或新生成的 machineId，立即持久化到配置文件
@@ -1289,11 +1511,67 @@ impl MultiTokenManager {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("没有可用的 accessToken"))?;
 
+        // 自愈：IdC/Enterprise 账号缺少 profileArn 时自动获取并回写
+        let mut creds = creds;
+        self.ensure_profile_arn(id, &mut creds, &token).await;
+
         Ok(CallContext {
             id,
             credentials: creds,
             token,
         })
+    }
+
+    /// 自愈式获取 profileArn。
+    ///
+    /// 当 IdC/Enterprise 账号缺少 profileArn 时，用当前 token 调用
+    /// ListAvailableProfiles 拉取真实 ARN，写回内存 + 磁盘。每进程每账号最多尝试一次
+    /// （内存去重），避免每次请求重复调用；失败保留标记，等下次重启再试。
+    async fn ensure_profile_arn(&self, id: u64, creds: &mut KiroCredentials, token: &str) {
+        if creds
+            .profile_arn
+            .as_deref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let is_idc = creds
+            .auth_method
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case("idc"))
+            .unwrap_or(false);
+        if !is_idc {
+            return;
+        }
+        {
+            let mut attempted = self.profile_arn_attempted.lock();
+            if !attempted.insert(id) {
+                return; // 已尝试过
+            }
+        }
+        let effective_proxy = creds.effective_proxy(self.proxy.as_ref());
+        match list_available_profiles(creds, &self.config, token, effective_proxy.as_ref()).await {
+            Ok(Some(arn)) => {
+                creds.profile_arn = Some(arn.clone());
+                {
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                        entry.credentials.profile_arn = Some(arn.clone());
+                    }
+                }
+                if let Err(e) = self.persist_credentials() {
+                    tracing::warn!("账号 #{} profileArn 回写失败: {}", id, e);
+                }
+                tracing::info!("账号 #{} 自动获取 profileArn 成功: {}", id, arn);
+            }
+            Ok(None) => {
+                tracing::warn!("账号 #{} ListAvailableProfiles 返回空（无可用 profile）", id);
+            }
+            Err(e) => {
+                tracing::warn!("账号 #{} 自动获取 profileArn 失败: {}", id, e);
+            }
+        }
     }
 
     /// 将账号列表回写到源文件
@@ -1999,6 +2277,10 @@ impl MultiTokenManager {
         });
         validated_cred.client_id = new_cred.client_id;
         validated_cred.client_secret = new_cred.client_secret;
+        // 保留用户手填的 profileArn（refresh_token 不会返回它）；留空则由后续 ensure_profile_arn 自动获取
+        if new_cred.profile_arn.is_some() {
+            validated_cred.profile_arn = new_cred.profile_arn;
+        }
         validated_cred.region = new_cred.region;
         validated_cred.auth_region = new_cred.auth_region;
         validated_cred.api_region = new_cred.api_region;
@@ -2046,6 +2328,133 @@ impl MultiTokenManager {
 
         tracing::info!("成功添加账号 #{}", new_id);
         Ok(new_id)
+    }
+
+    /// 发起设备授权登录：注册 OIDC 客户端 + 获取设备码，返回验证链接与会话 ID。
+    ///
+    /// 用户在浏览器打开 `verification_uri_complete` 完成登录后，前端轮询
+    /// `poll_device_login` 即可自动创建账号。
+    pub async fn start_device_login(
+        &self,
+        start_url: String,
+        region: Option<String>,
+    ) -> anyhow::Result<crate::admin::types::DeviceLoginStartResponse> {
+        let start_url = start_url.trim().to_string();
+        if start_url.is_empty() {
+            anyhow::bail!("startUrl 不能为空");
+        }
+        let region = region
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| self.config.effective_auth_region().to_string());
+
+        let proxy = self.proxy.clone();
+        let (client_id, client_secret) =
+            register_client(&self.config, &region, proxy.as_ref()).await?;
+        let dev = start_device_authorization(
+            &self.config,
+            &region,
+            &client_id,
+            &client_secret,
+            &start_url,
+            proxy.as_ref(),
+        )
+        .await?;
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+        {
+            let mut sessions = self.device_login_sessions.lock();
+            // 顺便清理已过期的会话
+            sessions
+                .retain(|_, s| s.created_at.elapsed().as_secs() < s.expires_in.max(0) as u64 + 60);
+            sessions.insert(
+                session_id.clone(),
+                DeviceLoginSession {
+                    client_id,
+                    client_secret,
+                    device_code: dev.device_code,
+                    region,
+                    created_at: Instant::now(),
+                    expires_in: dev.expires_in,
+                },
+            );
+        }
+
+        Ok(crate::admin::types::DeviceLoginStartResponse {
+            session_id,
+            user_code: dev.user_code,
+            verification_uri: dev.verification_uri,
+            verification_uri_complete: dev.verification_uri_complete,
+            interval: if dev.interval > 0 { dev.interval } else { 5 },
+            expires_in: dev.expires_in,
+        })
+    }
+
+    /// 轮询设备授权登录状态；用户完成授权后自动创建账号并返回其 ID。
+    pub async fn poll_device_login(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<crate::admin::types::DeviceLoginPollResponse> {
+        use crate::admin::types::DeviceLoginPollResponse;
+
+        let (client_id, client_secret, device_code, region) = {
+            let sessions = self.device_login_sessions.lock();
+            match sessions.get(session_id) {
+                Some(s) => (
+                    s.client_id.clone(),
+                    s.client_secret.clone(),
+                    s.device_code.clone(),
+                    s.region.clone(),
+                ),
+                None => anyhow::bail!("登录会话不存在或已过期"),
+            }
+        };
+
+        let proxy = self.proxy.clone();
+        let outcome = create_token_device(
+            &self.config,
+            &region,
+            &client_id,
+            &client_secret,
+            &device_code,
+            proxy.as_ref(),
+        )
+        .await?;
+
+        match outcome {
+            DeviceTokenOutcome::Pending => Ok(DeviceLoginPollResponse {
+                status: "pending".to_string(),
+                credential_id: None,
+                message: None,
+            }),
+            DeviceTokenOutcome::Failed(msg) => {
+                self.device_login_sessions.lock().remove(session_id);
+                Ok(DeviceLoginPollResponse {
+                    status: "error".to_string(),
+                    credential_id: None,
+                    message: Some(msg),
+                })
+            }
+            DeviceTokenOutcome::Complete { refresh_token } => {
+                let refresh_token = refresh_token
+                    .ok_or_else(|| anyhow::anyhow!("CreateToken 未返回 refreshToken"))?;
+                let new_cred = KiroCredentials {
+                    refresh_token: Some(refresh_token),
+                    client_id: Some(client_id),
+                    client_secret: Some(client_secret),
+                    auth_method: Some("idc".to_string()),
+                    region: Some(region),
+                    ..Default::default()
+                };
+                let credential_id = self.add_credential(new_cred).await?;
+                self.device_login_sessions.lock().remove(session_id);
+                Ok(DeviceLoginPollResponse {
+                    status: "complete".to_string(),
+                    credential_id: Some(credential_id),
+                    message: None,
+                })
+            }
+        }
     }
 
     /// 更新账号配置（Admin API）
@@ -2162,6 +2571,13 @@ impl MultiTokenManager {
                 None
             } else {
                 Some(cs.clone())
+            };
+        }
+        if let Some(ref pa) = update.profile_arn {
+            cred.profile_arn = if pa.trim().is_empty() {
+                None
+            } else {
+                Some(pa.clone())
             };
         }
         if let Some(ref ar) = update.auth_region {

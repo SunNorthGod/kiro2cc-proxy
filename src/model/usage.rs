@@ -66,6 +66,9 @@ pub struct UsageSummary {
     pub total_output_tokens: i64,
     /// 总估算费用（美元）
     pub total_cost: f64,
+    /// 总真实 credits 消耗（credits_used，缺失则按 estimated_cost*k_ref 估算）
+    #[serde(default)]
+    pub total_credits: f64,
     /// 节省的 credits 总量（仅含有 credits_used 的记录）
     pub total_credits_saved: f64,
     /// 按模型分组的用量
@@ -336,12 +339,21 @@ impl UsageTracker {
             })
             .sum();
 
+        let total_credits: f64 = filtered
+            .iter()
+            .map(|r| {
+                r.credits_used
+                    .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model))
+            })
+            .sum();
+
         UsageSummary {
             api_key_id,
             total_requests: filtered.len() as u64,
             total_input_tokens: filtered.iter().map(|r| r.input_tokens as i64).sum(),
             total_output_tokens: filtered.iter().map(|r| r.output_tokens as i64).sum(),
             total_cost: filtered.iter().map(|r| r.estimated_cost).sum(),
+            total_credits,
             total_credits_saved,
             by_model: by_model
                 .into_iter()
@@ -383,6 +395,22 @@ impl UsageTracker {
             .iter()
             .filter(|r| r.api_key_id == api_key_id)
             .map(|r| r.estimated_cost)
+            .sum()
+    }
+
+    /// 获取指定 API Key 的累计真实 credits 消耗。
+    ///
+    /// 优先使用 meteringEvent 上报的真实 `credits_used`；对于没有该字段的
+    /// 旧记录，回退到 `estimated_cost * get_k_ref(model)` 估算，与用量报表口径一致。
+    pub fn get_total_credits(&self, api_key_id: u32) -> f64 {
+        let records = self.records.read();
+        records
+            .iter()
+            .filter(|r| r.api_key_id == api_key_id)
+            .map(|r| {
+                r.credits_used
+                    .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model))
+            })
             .sum()
     }
 

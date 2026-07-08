@@ -94,6 +94,9 @@ pub struct AddCredentialRequest {
     /// OIDC Client Secret（IdC 认证需要）
     pub client_secret: Option<String>,
 
+    /// Profile ARN（可选，企业版 IdC 账号需要；留空则首次调用时自动获取）
+    pub profile_arn: Option<String>,
+
     /// 优先级（可选，默认 0）
     #[serde(default)]
     pub priority: u32,
@@ -160,6 +163,9 @@ pub struct UpdateCredentialRequest {
 
     /// OIDC Client Secret（可选）
     pub client_secret: Option<String>,
+
+    /// Profile ARN（可选，企业版 IdC 账号需要）
+    pub profile_arn: Option<String>,
 
     /// 账号级 Auth Region（用于 Token 刷新）
     pub auth_region: Option<String>,
@@ -258,6 +264,9 @@ pub struct CreateApiKeyRequest {
     /// 额度限制（美元）— 按额度模式
     #[serde(default)]
     pub spending_limit: Option<f64>,
+    /// 额度限制（真实 Kiro credits）— 与 spending_limit 独立
+    #[serde(default)]
+    pub credit_limit: Option<f64>,
     /// 有效期天数（懒激活模式）
     #[serde(default)]
     pub duration_days: Option<f64>,
@@ -282,6 +291,9 @@ pub struct UpdateApiKeyRequest {
     /// 额度限制（null 表示不限额）
     #[serde(default, deserialize_with = "deserialize_optional_f64")]
     pub spending_limit: Option<Option<f64>>,
+    /// credits 额度限制（null 表示不按 credits 限额）
+    #[serde(default, deserialize_with = "deserialize_optional_f64")]
+    pub credit_limit: Option<Option<f64>>,
     /// 有效期天数（懒激活模式）
     #[serde(default, deserialize_with = "deserialize_optional_f64")]
     pub duration_days: Option<Option<f64>>,
@@ -387,4 +399,56 @@ pub struct SetAuthKeysRequest {
     /// 新的 Admin Password（可选，不传则不修改）
     #[serde(default)]
     pub admin_api_key: Option<String>,
+}
+
+// ============ 设备授权登录（SSO device login） ============
+
+/// 发起设备授权登录请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartDeviceLoginRequest {
+    /// 企业 IdC 门户地址，如 https://d-xxxx.awsapps.com/start
+    pub start_url: String,
+    /// 区域（可选，默认使用全局配置）
+    #[serde(default)]
+    pub region: Option<String>,
+}
+
+/// 发起设备授权登录响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLoginStartResponse {
+    /// 轮询用的会话 ID
+    pub session_id: String,
+    /// 用户码（展示给用户核对）
+    pub user_code: String,
+    /// 验证地址
+    pub verification_uri: String,
+    /// 带用户码的验证地址（用户直接打开即可）
+    pub verification_uri_complete: String,
+    /// 轮询间隔（秒）
+    pub interval: i64,
+    /// 有效期（秒）
+    pub expires_in: i64,
+}
+
+/// 轮询设备授权登录请求
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PollDeviceLoginRequest {
+    pub session_id: String,
+}
+
+/// 轮询设备授权登录响应
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLoginPollResponse {
+    /// 状态：pending / complete / error
+    pub status: String,
+    /// 完成时返回新账号 ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<u64>,
+    /// 出错时的说明
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }

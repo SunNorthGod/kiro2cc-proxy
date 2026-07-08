@@ -15,7 +15,8 @@ use crate::kiro::token_manager::MultiTokenManager;
 use super::error::AdminServiceError;
 use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
-    CredentialsStatusResponse, LoadBalancingModeResponse, SetLoadBalancingModeRequest,
+    CredentialsStatusResponse, DeviceLoginPollResponse, DeviceLoginStartResponse,
+    LoadBalancingModeResponse, SetLoadBalancingModeRequest, StartDeviceLoginRequest,
     UpdateCredentialRequest,
 };
 
@@ -197,7 +198,7 @@ impl AdminService {
             id: None,
             access_token: None,
             refresh_token: Some(req.refresh_token),
-            profile_arn: None,
+            profile_arn: req.profile_arn.filter(|s| !s.trim().is_empty()),
             expires_at: None,
             auth_method: Some(req.auth_method),
             client_id: req.client_id,
@@ -237,6 +238,28 @@ impl AdminService {
             credential_id,
             email,
         })
+    }
+
+    /// 发起设备授权登录（注册客户端 + 获取设备码）
+    pub async fn start_device_login(
+        &self,
+        req: StartDeviceLoginRequest,
+    ) -> Result<DeviceLoginStartResponse, AdminServiceError> {
+        self.token_manager
+            .start_device_login(req.start_url, req.region)
+            .await
+            .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
+    }
+
+    /// 轮询设备授权登录状态（完成时自动创建账号）
+    pub async fn poll_device_login(
+        &self,
+        session_id: &str,
+    ) -> Result<DeviceLoginPollResponse, AdminServiceError> {
+        self.token_manager
+            .poll_device_login(session_id)
+            .await
+            .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
     }
 
     /// 删除账号

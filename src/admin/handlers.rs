@@ -10,8 +10,9 @@ use axum::{
 use super::{
     middleware::AdminState,
     types::{
-        AddCredentialRequest, SetDisabledRequest, SetLoadBalancingModeRequest, SetPriorityRequest,
-        SuccessResponse, UpdateCredentialRequest,
+        AddCredentialRequest, PollDeviceLoginRequest, SetDisabledRequest,
+        SetLoadBalancingModeRequest, SetPriorityRequest, StartDeviceLoginRequest, SuccessResponse,
+        UpdateCredentialRequest,
     },
 };
 
@@ -237,4 +238,28 @@ fn persist_auth_keys(
     let output = serde_json::to_string_pretty(&json)?;
     std::fs::write(config_path, output)?;
     Ok(())
+}
+
+/// POST /api/admin/device-login/start
+/// 发起设备授权登录：注册客户端 + 获取设备码/验证链接
+pub async fn start_device_login(
+    State(state): State<AdminState>,
+    Json(payload): Json<StartDeviceLoginRequest>,
+) -> impl IntoResponse {
+    match state.service.start_device_login(payload).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/device-login/poll
+/// 轮询设备授权登录状态（完成时自动创建账号）
+pub async fn poll_device_login(
+    State(state): State<AdminState>,
+    Json(payload): Json<PollDeviceLoginRequest>,
+) -> impl IntoResponse {
+    match state.service.poll_device_login(&payload.session_id).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
 }

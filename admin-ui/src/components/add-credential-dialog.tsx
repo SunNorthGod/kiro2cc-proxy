@@ -28,6 +28,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [apiRegion, setApiRegion] = useState('')
   const [clientId, setClientId] = useState('')
   const [clientSecret, setClientSecret] = useState('')
+  const [profileArn, setProfileArn] = useState('')
   const [priority, setPriority] = useState('0')
   const [machineId, setMachineId] = useState('')
   const [proxyUrl, setProxyUrl] = useState('')
@@ -44,6 +45,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     setApiRegion('')
     setClientId('')
     setClientSecret('')
+    setProfileArn('')
     setPriority('0')
     setMachineId('')
     setProxyUrl('')
@@ -75,6 +77,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
         apiRegion: apiRegion.trim() || undefined,
         clientId: clientId.trim() || undefined,
         clientSecret: clientSecret.trim() || undefined,
+        profileArn: profileArn.trim() || undefined,
         priority: parseInt(priority) || 0,
         machineId: machineId.trim() || undefined,
         proxyUrl: proxyUrl.trim() || undefined,
@@ -203,6 +206,19 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                     placeholder="请输入 Client Secret"
                     value={clientSecret}
                     onChange={(e) => setClientSecret(e.target.value)}
+                    disabled={isPending}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label htmlFor="profileArn" className="text-sm font-medium">
+                    Profile ARN <span className="text-muted-foreground text-xs">(企业版可选，留空自动获取)</span>
+                  </label>
+                  <Input
+                    id="profileArn"
+                    type="text"
+                    placeholder="arn:aws:codewhisperer:us-east-1:...:profile/... （留空则首次请求自动获取）"
+                    value={profileArn}
+                    onChange={(e) => setProfileArn(e.target.value)}
                     disabled={isPending}
                   />
                 </div>
