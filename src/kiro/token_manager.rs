@@ -497,9 +497,16 @@ struct RegisterClientResponse {
 }
 
 /// 注册一个 OIDC 公共客户端，返回 (clientId, clientSecret)
+///
+/// 关键：企业版 IdC 必须带上 `issuerUrl`（= 访问门户 URL，即 startUrl）与 `grantTypes`。
+/// 缺失时 AWS 的 OIDC 仍会签发 token 并通过校验，但该 token 不会绑定到此 IdC 实例下的
+/// CodeWhisperer 应用，导致运行时返回 403「bearer token invalid」，且
+/// ListAvailableProfiles 返回空数组。AWS RegisterClient 文档原文：issuerUrl
+/// “is needed for user access to resources through the client”。
 async fn register_client(
     config: &Config,
     region: &str,
+    start_url: &str,
     proxy: Option<&ProxyConfig>,
 ) -> anyhow::Result<(String, String)> {
     let url = format!("https://oidc.{}.amazonaws.com/client/register", region);
@@ -508,6 +515,11 @@ async fn register_client(
         "clientName": format!("kiro2cc-proxy-{}", uuid::Uuid::new_v4()),
         "clientType": "public",
         "scopes": DEVICE_LOGIN_SCOPES,
+        "grantTypes": [
+            "urn:ietf:params:oauth:grant-type:device_code",
+            "refresh_token"
+        ],
+        "issuerUrl": start_url,
     });
     let resp = client
         .post(&url)
@@ -2434,7 +2446,7 @@ impl MultiTokenManager {
 
         let proxy = self.proxy.clone();
         let (client_id, client_secret) =
-            register_client(&self.config, &region, proxy.as_ref()).await?;
+            register_client(&self.config, &region, &start_url, proxy.as_ref()).await?;
         let dev = start_device_authorization(
             &self.config,
             &region,
