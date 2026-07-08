@@ -335,6 +335,50 @@ impl ApiKeyManager {
         Ok(Some(updated))
     }
 
+    /// 给 Key 增量续费：直接叠加时长（天）或额度（credits），而非覆盖设置。
+    ///
+    /// - `add_credits`：在现有 credit_limit 上叠加（原本无限额则从 0 起算）。
+    /// - `add_days`：活跃 Key（已激活且有到期时间）在原到期时间上延长；
+    ///   待激活/已过期/永久 Key 则叠加到懒激活时长（首次使用后开始计时）。
+    pub fn topup(
+        &self,
+        id: u32,
+        add_days: Option<f64>,
+        add_credits: Option<f64>,
+    ) -> anyhow::Result<Option<ApiKey>> {
+        let mut keys = self.keys.write();
+        let Some(api_key) = keys.iter_mut().find(|k| k.id == id) else {
+            return Ok(None);
+        };
+
+        if let Some(c) = add_credits {
+            api_key.credit_limit = Some(api_key.credit_limit.unwrap_or(0.0) + c);
+        }
+
+        if let Some(d) = add_days {
+            if api_key.is_active() && api_key.expires_at.is_some() {
+                // 活跃 Key：在当前到期时间上延长
+                let extension = chrono::Duration::milliseconds((d * 86_400_000.0) as i64);
+                let new_expires = api_key.expires_at.unwrap() + extension;
+                api_key.expires_at = Some(new_expires);
+                if let Some(activated) = api_key.activated_at {
+                    let total_ms = (new_expires - activated).num_milliseconds();
+                    api_key.duration_days = Some(total_ms as f64 / 86_400_000.0);
+                }
+            } else {
+                // 待激活/已过期/永久：叠加到懒激活时长，重置为待激活状态
+                api_key.duration_days = Some(api_key.duration_days.unwrap_or(0.0) + d);
+                api_key.activated_at = None;
+                api_key.expires_at = None;
+            }
+        }
+
+        let updated = api_key.clone();
+        drop(keys);
+        self.save()?;
+        Ok(Some(updated))
+    }
+
     /// 删除 key
     pub fn delete(&self, id: u32) -> anyhow::Result<bool> {
         let mut keys = self.keys.write();

@@ -11,7 +11,10 @@ use serde::Serialize;
 
 use super::{
     middleware::AdminState,
-    types::{AdminErrorResponse, CreateApiKeyRequest, SuccessResponse, UpdateApiKeyRequest},
+    types::{
+        AdminErrorResponse, CreateApiKeyRequest, SuccessResponse, TopUpApiKeyRequest,
+        UpdateApiKeyRequest,
+    },
 };
 
 /// GET /api/admin/server-info
@@ -90,6 +93,36 @@ pub async fn update_api_key(
         payload.duration_days,
         payload.bound_credential_ids,
     ) {
+        Ok(Some(api_key)) => Json(api_key).into_response(),
+        Ok(None) => {
+            let error = AdminErrorResponse::not_found(format!("API Key #{} 不存在", id));
+            (StatusCode::NOT_FOUND, Json(error)).into_response()
+        }
+        Err(e) => {
+            let error = AdminErrorResponse::internal_error(e.to_string());
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response()
+        }
+    }
+}
+
+/// POST /api/admin/api-keys/:id/topup
+/// 给 Key 续费/充值：叠加时长或额度（增量）
+pub async fn top_up_api_key(
+    State(state): State<AdminState>,
+    Path(id): Path<u32>,
+    Json(payload): Json<TopUpApiKeyRequest>,
+) -> impl IntoResponse {
+    let Some(manager) = &state.api_key_manager else {
+        let error = AdminErrorResponse::internal_error("API Key 管理未启用");
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response();
+    };
+
+    if payload.add_days.is_none() && payload.add_credits.is_none() {
+        let error = AdminErrorResponse::invalid_request("请至少提供 addDays 或 addCredits");
+        return (StatusCode::BAD_REQUEST, Json(error)).into_response();
+    }
+
+    match manager.topup(id, payload.add_days, payload.add_credits) {
         Ok(Some(api_key)) => Json(api_key).into_response(),
         Ok(None) => {
             let error = AdminErrorResponse::not_found(format!("API Key #{} 不存在", id));

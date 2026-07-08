@@ -296,6 +296,18 @@ pub struct UpdateApiKeyRequest {
     pub bound_credential_ids: Option<Option<Vec<u64>>>,
 }
 
+/// 续费/充值请求：给 Key 叠加时长或额度（增量，不是覆盖）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopUpApiKeyRequest {
+    /// 增加的天数（可为小数，如 0.5 天）
+    #[serde(default)]
+    pub add_days: Option<f64>,
+    /// 增加的额度（credits）
+    #[serde(default)]
+    pub add_credits: Option<f64>,
+}
+
 /// 区分 JSON 中"字段缺失"与"字段为 null"
 /// 缺失 → None（不更新），null → Some(None)（永不过期），有值 → Some(Some(dt))
 fn deserialize_optional_datetime<'de, D>(

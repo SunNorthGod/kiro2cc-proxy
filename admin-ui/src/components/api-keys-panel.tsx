@@ -16,7 +16,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { useQueryClient } from '@tanstack/react-query'
-import { useApiKeys, useCreateApiKey, useUpdateApiKey, useDeleteApiKey, useServerInfo, useAllUsage, useResetKeyUsage, useRpm, useCredentials, useCredentialBalances } from '@/hooks/use-credentials'
+import { useApiKeys, useCreateApiKey, useUpdateApiKey, useDeleteApiKey, useTopUpApiKey, useServerInfo, useAllUsage, useResetKeyUsage, useRpm, useCredentials, useCredentialBalances } from '@/hooks/use-credentials'
 import { deleteApiKey as deleteApiKeyApi } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import type { ApiKeyItem, UsageSummary } from '@/types/api'
@@ -82,6 +82,29 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
   const { mutate: createKey, isPending: isCreating } = useCreateApiKey()
   const { mutate: updateKey } = useUpdateApiKey()
   const { mutate: deleteKey } = useDeleteApiKey()
+  const { mutate: topUpKey } = useTopUpApiKey()
+
+  const handleAddCredits = (key: ApiKeyItem) => {
+    const v = window.prompt(`给「${key.name}」增加多少额度（credits）？`, '100')
+    if (v == null) return
+    const n = Number(v)
+    if (!Number.isFinite(n) || n <= 0) { toast.error('请输入正数'); return }
+    topUpKey({ id: key.id, addCredits: n }, {
+      onSuccess: () => toast.success(`已为「${key.name}」增加 ${n} credits`),
+      onError: (err) => toast.error(`续费失败: ${extractErrorMessage(err)}`),
+    })
+  }
+
+  const handleAddDays = (key: ApiKeyItem) => {
+    const v = window.prompt(`给「${key.name}」增加多少天有效期？`, '30')
+    if (v == null) return
+    const n = Number(v)
+    if (!Number.isFinite(n) || n <= 0) { toast.error('请输入正数'); return }
+    topUpKey({ id: key.id, addDays: n }, {
+      onSuccess: () => toast.success(`已为「${key.name}」增加 ${n} 天`),
+      onError: (err) => toast.error(`续费失败: ${extractErrorMessage(err)}`),
+    })
+  }
   const { mutate: resetUsage } = useResetKeyUsage()
 
   // 构建 credential id -> CredentialStatusItem 映射
@@ -580,6 +603,12 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
                       {copiedId === apiKey.id ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
                     </Button>
                     <Switch checked={apiKey.enabled} onCheckedChange={() => handleToggleEnabled(apiKey)} />
+                    <Button variant="ghost" size="sm" onClick={() => handleAddCredits(apiKey)} title="加额度">
+                      <Coins className="h-4 w-4" />
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => handleAddDays(apiKey)} title="加时长">
+                      <Clock className="h-4 w-4" />
+                    </Button>
                     <Button variant="ghost" size="sm" onClick={() => openEdit(apiKey)} title="编辑">
                       <Pencil className="h-4 w-4" />
                     </Button>

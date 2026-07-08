@@ -170,6 +170,15 @@ export async function deleteApiKey(id: number): Promise<SuccessResponse> {
   return data
 }
 
+// 续费/充值 API Key（叠加时长或额度）
+export async function topUpApiKey(
+  id: number,
+  req: { addDays?: number; addCredits?: number }
+): Promise<ApiKeyItem> {
+  const { data } = await api.post<ApiKeyItem>(`/api-keys/${id}/topup`, req)
+  return data
+}
+
 // ============ API Key 用量 ============
 
 // 获取所有 API Key 用量概览

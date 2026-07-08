@@ -16,6 +16,7 @@ import {
   createApiKey,
   updateApiKey,
   deleteApiKey,
+  topUpApiKey,
   getAllUsage,
   resetKeyUsage,
   getRpm,
@@ -201,6 +202,18 @@ export function useDeleteApiKey() {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (id: number) => deleteApiKey(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['apiKeys'] })
+    },
+  })
+}
+
+// 续费/充值 API Key（叠加时长或额度）
+export function useTopUpApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, addDays, addCredits }: { id: number; addDays?: number; addCredits?: number }) =>
+      topUpApiKey(id, { addDays, addCredits }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] })
     },
