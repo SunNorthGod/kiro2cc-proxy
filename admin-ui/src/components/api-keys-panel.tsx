@@ -43,7 +43,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const [copiedMaster, setCopiedMaster] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState(false)
-  const [sortBy, setSortBy] = useState<'newest' | 'cost-desc' | 'cost-asc'>('newest')
+  const [sortBy, setSortBy] = useState<'newest' | 'cost-desc' | 'cost-asc' | 'rpm-desc'>('newest')
   const [searchQuery, setSearchQuery] = useState('')
   const [purgeDialogOpen, setPurgeDialogOpen] = useState(false)
   const [purging, setPurging] = useState(false)
@@ -84,26 +84,35 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
   const { mutate: deleteKey } = useDeleteApiKey()
   const { mutate: topUpKey } = useTopUpApiKey()
 
-  const handleAddCredits = (key: ApiKeyItem) => {
-    const v = window.prompt(`给「${key.name}」增加多少额度（credits）？`, '100')
-    if (v == null) return
-    const n = Number(v)
-    if (!Number.isFinite(n) || n <= 0) { toast.error('请输入正数'); return }
-    topUpKey({ id: key.id, addCredits: n }, {
-      onSuccess: () => toast.success(`已为「${key.name}」增加 ${n} credits`),
-      onError: (err) => toast.error(`续费失败: ${extractErrorMessage(err)}`),
-    })
+  const [topUpTarget, setTopUpTarget] = useState<ApiKeyItem | null>(null)
+  const [topUpValue, setTopUpValue] = useState('')
+  // 卡密类型：有 creditLimit = 积分卡（加积分），否则按时长卡（加天数）
+  const topUpIsCredits = topUpTarget?.creditLimit != null
+
+  const openTopUp = (key: ApiKeyItem) => {
+    setTopUpTarget(key)
+    setTopUpValue(key.creditLimit != null ? '100' : '30')
   }
 
-  const handleAddDays = (key: ApiKeyItem) => {
-    const v = window.prompt(`给「${key.name}」增加多少天有效期？`, '30')
-    if (v == null) return
-    const n = Number(v)
-    if (!Number.isFinite(n) || n <= 0) { toast.error('请输入正数'); return }
-    topUpKey({ id: key.id, addDays: n }, {
-      onSuccess: () => toast.success(`已为「${key.name}」增加 ${n} 天`),
-      onError: (err) => toast.error(`续费失败: ${extractErrorMessage(err)}`),
-    })
+  const submitTopUp = () => {
+    if (!topUpTarget) return
+    const key = topUpTarget
+    const n = Number(topUpValue)
+    if (!Number.isFinite(n) || n <= 0) {
+      toast.error('请输入正数')
+      return
+    }
+    const isCredits = key.creditLimit != null
+    topUpKey(
+      isCredits ? { id: key.id, addCredits: n } : { id: key.id, addDays: n },
+      {
+        onSuccess: () => {
+          toast.success(isCredits ? `已为「${key.name}」增加 ${n} credits` : `已为「${key.name}」增加 ${n} 天`)
+          setTopUpTarget(null)
+        },
+        onError: (err) => toast.error(`续费失败: ${extractErrorMessage(err)}`),
+      }
+    )
   }
   const { mutate: resetUsage } = useResetKeyUsage()
 
@@ -447,6 +456,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
             <Button size="sm" variant={sortBy === 'newest' ? 'default' : 'outline'} onClick={() => setSortBy('newest')}>最新</Button>
             <Button size="sm" variant={sortBy === 'cost-desc' ? 'default' : 'outline'} onClick={() => setSortBy('cost-desc')}>积分↓</Button>
             <Button size="sm" variant={sortBy === 'cost-asc' ? 'default' : 'outline'} onClick={() => setSortBy('cost-asc')}>积分↑</Button>
+            <Button size="sm" variant={sortBy === 'rpm-desc' ? 'default' : 'outline'} onClick={() => setSortBy('rpm-desc')}>RPM↓</Button>
           </div>
           <Button onClick={() => { setNewName(generateUniqueSerial()); setCreateDialogOpen(true) }} size="sm">
             <Plus className="h-4 w-4 mr-2" />
@@ -489,6 +499,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
         const sortFn = (a: ApiKeyItem, b: ApiKeyItem) => {
           if (sortBy === 'cost-desc') return (usageMap.get(b.id)?.totalCredits ?? 0) - (usageMap.get(a.id)?.totalCredits ?? 0)
           if (sortBy === 'cost-asc') return (usageMap.get(a.id)?.totalCredits ?? 0) - (usageMap.get(b.id)?.totalCredits ?? 0)
+          if (sortBy === 'rpm-desc') return (rpmData?.byApiKey?.[String(b.id)] ?? 0) - (rpmData?.byApiKey?.[String(a.id)] ?? 0)
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         }
         const boundKeys = [...filteredKeys].filter(k => k.boundCredentialIds && k.boundCredentialIds.length > 0).sort(sortFn)
@@ -603,11 +614,8 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
                       {copiedId === apiKey.id ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
                     </Button>
                     <Switch checked={apiKey.enabled} onCheckedChange={() => handleToggleEnabled(apiKey)} />
-                    <Button variant="ghost" size="sm" onClick={() => handleAddCredits(apiKey)} title="加额度">
-                      <Coins className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => handleAddDays(apiKey)} title="加时长">
-                      <Clock className="h-4 w-4" />
+                    <Button variant="ghost" size="sm" onClick={() => openTopUp(apiKey)} title={apiKey.creditLimit != null ? '加额度' : '加时长'}>
+                      {apiKey.creditLimit != null ? <Coins className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
                     </Button>
                     <Button variant="ghost" size="sm" onClick={() => openEdit(apiKey)} title="编辑">
                       <Pencil className="h-4 w-4" />
@@ -945,6 +953,52 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditingKey(null)}>取消</Button>
             <Button onClick={handleUpdate}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 续费/充值对话框（按卡密类型：积分卡加额度，时长卡加天数） */}
+      <Dialog open={!!topUpTarget} onOpenChange={(open) => !open && setTopUpTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{topUpIsCredits ? '增加额度' : '增加时长'}</DialogTitle>
+            <DialogDescription>
+              {topUpTarget ? `为「${topUpTarget.name}」${topUpIsCredits ? '叠加积分额度' : '延长有效期'}（当前值上累加）` : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <label className="text-sm font-medium">
+              {topUpIsCredits ? '增加额度（credits）' : '增加天数'}
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {(topUpIsCredits ? [50, 100, 200, 500] : [7, 30, 90, 180]).map((amount) => (
+                <Button
+                  key={amount}
+                  type="button"
+                  size="sm"
+                  variant={Number(topUpValue) === amount ? 'default' : 'outline'}
+                  onClick={() => setTopUpValue(String(amount))}
+                >
+                  {topUpIsCredits ? amount : `${amount} 天`}
+                </Button>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">自定义</span>
+              <Input
+                type="text"
+                inputMode="numeric"
+                value={topUpValue}
+                onChange={(e) => setTopUpValue(e.target.value.replace(/[^\d.]/g, ''))}
+                onFocus={(e) => e.target.select()}
+                className="w-32"
+              />
+              <span className="text-sm text-muted-foreground">{topUpIsCredits ? 'credits' : '天'}</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTopUpTarget(null)}>取消</Button>
+            <Button onClick={submitTopUp}>确认</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

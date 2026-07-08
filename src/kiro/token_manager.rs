@@ -754,6 +754,18 @@ pub struct CredentialEntrySnapshot {
     pub auth_method: Option<String>,
     /// 是否有 Profile ARN
     pub has_profile_arn: bool,
+    /// Profile ARN 原值（用于编辑回填）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_arn: Option<String>,
+    /// Region（用于编辑回填）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Auth Region（用于编辑回填）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_region: Option<String>,
+    /// API Region（用于编辑回填）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_region: Option<String>,
     /// Token 过期时间
     pub expires_at: Option<String>,
     /// refreshToken 的 SHA-256 哈希（用于前端重复检测）
@@ -836,8 +848,25 @@ struct DeviceLoginSession {
     client_secret: String,
     device_code: String,
     region: String,
+    start_url: String,
     created_at: Instant,
     expires_in: i64,
+}
+
+/// 从企业 IdC 门户地址提取一个可读名称，如
+/// `https://d-9066740be4.awsapps.com/start` -> `d-9066740be4`。
+fn nickname_from_start_url(start_url: &str) -> Option<String> {
+    let s = start_url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = s.split('/').next().unwrap_or("");
+    let sub = host.split('.').next().unwrap_or("");
+    if sub.is_empty() {
+        None
+    } else {
+        Some(format!("IdC-{}", sub))
+    }
 }
 
 /// 每个账号最大 API 调用失败次数
@@ -2030,6 +2059,10 @@ impl MultiTokenManager {
                         }
                     }),
                     has_profile_arn: e.credentials.profile_arn.is_some(),
+                    profile_arn: e.credentials.profile_arn.clone(),
+                    region: e.credentials.region.clone(),
+                    auth_region: e.credentials.auth_region.clone(),
+                    api_region: e.credentials.api_region.clone(),
                     expires_at: e.credentials.expires_at.clone(),
                     refresh_token_hash: e.credentials.refresh_token.as_deref().map(sha256_hex),
                     email: e.credentials.email.clone(),
@@ -2383,6 +2416,7 @@ impl MultiTokenManager {
                     client_secret,
                     device_code: dev.device_code,
                     region,
+                    start_url: start_url.clone(),
                     created_at: Instant::now(),
                     expires_in: dev.expires_in,
                 },
@@ -2406,7 +2440,7 @@ impl MultiTokenManager {
     ) -> anyhow::Result<crate::admin::types::DeviceLoginPollResponse> {
         use crate::admin::types::DeviceLoginPollResponse;
 
-        let (client_id, client_secret, device_code, region) = {
+        let (client_id, client_secret, device_code, region, start_url) = {
             let sessions = self.device_login_sessions.lock();
             match sessions.get(session_id) {
                 Some(s) => (
@@ -2414,6 +2448,7 @@ impl MultiTokenManager {
                     s.client_secret.clone(),
                     s.device_code.clone(),
                     s.region.clone(),
+                    s.start_url.clone(),
                 ),
                 None => anyhow::bail!("登录会话不存在或已过期"),
             }
@@ -2453,6 +2488,8 @@ impl MultiTokenManager {
                     client_secret: Some(client_secret),
                     auth_method: Some("idc".to_string()),
                     region: Some(region),
+                    // 用门户地址派生一个可读名称，避免展示“账号 #N”
+                    nickname: nickname_from_start_url(&start_url),
                     ..Default::default()
                 };
                 let credential_id = self.add_credential(new_cred).await?;

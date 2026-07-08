@@ -72,6 +72,10 @@ impl AdminService {
                 expires_at: entry.expires_at,
                 auth_method: entry.auth_method,
                 has_profile_arn: entry.has_profile_arn,
+                profile_arn: entry.profile_arn,
+                region: entry.region,
+                auth_region: entry.auth_region,
+                api_region: entry.api_region,
                 refresh_token_hash: entry.refresh_token_hash,
                 email: entry.email,
                 nickname: entry.nickname,
@@ -208,8 +212,12 @@ impl AdminService {
             auth_region: req.auth_region,
             api_region: req.api_region,
             machine_id: req.machine_id,
-            email: req.email,
-            nickname: req.nickname,
+            email: req.email.clone(),
+            // 未显式指定昵称时，用邮箱/用户名作为展示名称（避免显示“账号 #N”）
+            nickname: req
+                .nickname
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| email.clone().filter(|s| !s.trim().is_empty())),
             subscription_title: None, // 将在首次获取使用额度时自动更新
             proxy_url: req.proxy_url,
             proxy_username: req.proxy_username,

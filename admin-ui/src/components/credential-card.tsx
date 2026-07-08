@@ -166,7 +166,7 @@ export function CredentialCard({
                 <div className="flex items-center gap-2 flex-wrap">
                   <code className="text-xs text-muted-foreground font-mono">#{String(credential.id).padStart(3, '0')}</code>
                   <span className="font-medium truncate">
-                    {credential.nickname || `账号 #${credential.id}`}
+                    {credential.nickname || credential.email || `账号 #${credential.id}`}
                   </span>
                   <HealthBadge status={credential.healthStatus} />
                   {credential.disabled && <Badge variant="destructive">已禁用</Badge>}

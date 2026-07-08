@@ -23,6 +23,7 @@ interface EditCredentialDialogProps {
 export function EditCredentialDialog({ open, onOpenChange, credential }: EditCredentialDialogProps) {
   const [authRegion, setAuthRegion] = useState('')
   const [apiRegion, setApiRegion] = useState('')
+  const [profileArn, setProfileArn] = useState('')
   const [nickname, setNickname] = useState('')
   const [email, setEmail] = useState('')
   const [clientId, setClientId] = useState('')
@@ -34,11 +35,12 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
 
   const { mutate, isPending } = useUpdateCredential()
 
-  // 当对话框打开或凭据变化时，重置表单
+  // 当对话框打开或凭据变化时，回填已有信息
   useEffect(() => {
     if (open) {
-      setAuthRegion('')
-      setApiRegion('')
+      setAuthRegion(credential.authRegion || '')
+      setApiRegion(credential.apiRegion || '')
+      setProfileArn(credential.profileArn || '')
       setNickname(credential.nickname || '')
       setEmail(credential.email || '')
       setClientId('')
@@ -53,10 +55,11 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
 
-    // 构建只包含有变更的字段
+    // 构建更新字段：可见字段按“与原值不同才提交”，敏感字段（密钥/密码）留空表示不改
     const data: Record<string, string> = {}
-    if (authRegion !== '') data.authRegion = authRegion
-    if (apiRegion !== '') data.apiRegion = apiRegion
+    if (authRegion !== (credential.authRegion || '')) data.authRegion = authRegion
+    if (apiRegion !== (credential.apiRegion || '')) data.apiRegion = apiRegion
+    if (profileArn !== (credential.profileArn || '')) data.profileArn = profileArn
     if (nickname !== (credential.nickname || '')) data.nickname = nickname
     if (email !== (credential.email || '')) data.email = email
     if (clientId !== '') data.clientId = clientId
@@ -97,7 +100,7 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
         <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
           <div className="space-y-4 py-4 overflow-y-auto flex-1 pr-1">
             <p className="text-xs text-muted-foreground">
-              只填写需要修改的字段，留空的字段不会被更改。
+              已自动回填现有信息，可直接修改。Client ID / Client Secret / Machine ID / 代理密码等敏感字段留空表示保持不变。
             </p>
 
             {/* 昵称 */}
@@ -147,6 +150,18 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
             {/* IdC 字段 */}
             {isIdc && (
               <>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Profile ARN</label>
+                  <Input
+                    placeholder="arn:aws:codewhisperer:...:profile/..."
+                    value={profileArn}
+                    onChange={(e) => setProfileArn(e.target.value)}
+                    disabled={isPending}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    企业版账号需要；留空则首次请求时自动获取
+                  </p>
+                </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Client ID</label>
                   <Input

@@ -17,6 +17,10 @@ export interface CredentialStatusItem {
   expiresAt: string | null
   authMethod: string | null
   hasProfileArn: boolean
+  profileArn?: string
+  region?: string
+  authRegion?: string
+  apiRegion?: string
   email?: string
   nickname?: string
   refreshTokenHash?: string
