@@ -1056,10 +1056,22 @@ async fn handle_non_stream_request(
     // 构建响应内容
     let mut content: Vec<serde_json::Value> = Vec::new();
 
-    if !text_content.is_empty() {
+    // 将开头的 <thinking>...</thinking> 拆成独立 thinking 块（供 opencode 等客户端显示推理）
+    let (thinking_opt, text_body) = split_thinking_and_text(&text_content);
+    if let Some(thinking) = thinking_opt {
+        if !thinking.is_empty() {
+            content.push(json!({
+                "type": "thinking",
+                "thinking": thinking,
+                "signature": ""
+            }));
+        }
+    }
+
+    if !text_body.is_empty() {
         content.push(json!({
             "type": "text",
-            "text": text_content
+            "text": text_body
         }));
     }
 
@@ -1180,6 +1192,25 @@ async fn handle_non_stream_request(
 ///
 /// 当请求 JSON schema 结构化输出时，部分模型仍会将结果包裹在 ```json...``` 中。
 /// 此函数识别并剥离这些围栏，返回纯 JSON 文本。
+/// 从非流式输出中拆分开头的 `<thinking>...</thinking>`，返回 (thinking, 正文)。
+///
+/// Kiro 会把推理内容以 `<thinking>` 标签内联在正文开头。为了让 opencode 等客户端
+/// 正确渲染「思考」，这里将其拆成独立的 Anthropic thinking 内容块。
+/// 仅当文本以 `<thinking>` 开头时才拆分，避免误伤正文中提到该标签的情况。
+fn split_thinking_and_text(content: &str) -> (Option<String>, String) {
+    const OPEN: &str = "<thinking>";
+    const CLOSE: &str = "</thinking>";
+    let trimmed = content.trim_start();
+    if let Some(after_open) = trimmed.strip_prefix(OPEN) {
+        if let Some(close_idx) = after_open.find(CLOSE) {
+            let thinking = after_open[..close_idx].trim().to_string();
+            let text = after_open[close_idx + CLOSE.len()..].trim_start().to_string();
+            return (Some(thinking), text);
+        }
+    }
+    (None, content.to_string())
+}
+
 fn strip_json_fences(text: String) -> String {
     let trimmed = text.trim();
     if !trimmed.starts_with("```") {
