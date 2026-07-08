@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { toast } from 'sonner'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -26,60 +26,17 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
   const [region, setRegion] = useState('us-east-1')
   const [starting, setStarting] = useState(false)
   const [session, setSession] = useState<DeviceLoginStartResponse | null>(null)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  const clearTimer = () => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
-  }
+  const [redirectResponse, setRedirectResponse] = useState('')
+  const [completing, setCompleting] = useState(false)
 
   const reset = () => {
-    clearTimer()
     setStartUrl('')
     setRegion('us-east-1')
     setStarting(false)
     setSession(null)
+    setRedirectResponse('')
+    setCompleting(false)
   }
-
-  // 轮询登录状态
-  useEffect(() => {
-    if (!session) return
-    const deadline = Date.now() + Math.max(session.expiresIn, 60) * 1000
-    const intervalMs = Math.max(session.interval, 1) * 1000
-
-    const poll = async () => {
-      if (Date.now() > deadline) {
-        clearTimer()
-        setSession(null)
-        toast.error('登录超时，请重试')
-        return
-      }
-      try {
-        const res = await pollDeviceLogin(session.sessionId)
-        if (res.status === 'complete') {
-          clearTimer()
-          toast.success(`登录成功，已添加账号 #${res.credentialId}`)
-          queryClient.invalidateQueries({ queryKey: ['credentials'] })
-          setSession(null)
-          onOpenChange(false)
-          reset()
-        } else if (res.status === 'error') {
-          clearTimer()
-          setSession(null)
-          toast.error(`登录失败: ${res.message || '未知错误'}`)
-        }
-        // pending: 继续等待
-      } catch {
-        // 网络抖动等瞬时错误，继续轮询直到超时
-      }
-    }
-
-    timerRef.current = setInterval(poll, intervalMs)
-    return clearTimer
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session])
 
   const handleStart = async () => {
     if (!startUrl.trim()) {
@@ -93,12 +50,44 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
         region: region.trim() || undefined,
       })
       setSession(res)
-      // 自动打开验证链接
-      window.open(res.verificationUriComplete, '_blank', 'noopener,noreferrer')
     } catch (error: unknown) {
       toast.error(`发起登录失败: ${extractErrorMessage(error)}`)
     } finally {
       setStarting(false)
+    }
+  }
+
+  const handleComplete = async () => {
+    if (!session) return
+    if (!redirectResponse.trim()) {
+      toast.error('请粘贴授权后跳转的回调地址（或其中的 code）')
+      return
+    }
+    setCompleting(true)
+    try {
+      const res = await pollDeviceLogin(session.sessionId, redirectResponse.trim())
+      if (res.status === 'complete') {
+        toast.success(`登录成功，已添加账号 #${res.credentialId}`)
+        queryClient.invalidateQueries({ queryKey: ['credentials'] })
+        onOpenChange(false)
+        reset()
+      } else {
+        toast.error(`登录失败: ${res.message || '未知错误'}`)
+      }
+    } catch (error: unknown) {
+      toast.error(`完成登录失败: ${extractErrorMessage(error)}`)
+    } finally {
+      setCompleting(false)
+    }
+  }
+
+  const handleCopyUrl = async () => {
+    if (!session) return
+    try {
+      await navigator.clipboard.writeText(session.authorizeUrl)
+      toast.success('已复制登录链接')
+    } catch {
+      toast.error('复制失败，请手动选择链接复制')
     }
   }
 
@@ -109,16 +98,16 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>SSO 设备登录（企业 IdC）</DialogTitle>
+          <DialogTitle>SSO 登录（企业 IdC）</DialogTitle>
         </DialogHeader>
 
         {!session ? (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              填写企业门户地址后点击「开始登录」，浏览器会打开 AWS 授权页面，
-              用你的企业账号登录并授权即可，无需手动复制 token。
+              填写企业门户地址和区域后点击「获取登录链接」。下一步会给出一个授权链接，
+              在浏览器登录授权后，把跳转到的回调地址粘贴回来即可完成添加。
             </p>
             <div className="space-y-2">
               <label htmlFor="startUrl" className="text-sm font-medium">
@@ -145,42 +134,65 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
                 onChange={(e) => setRegion(e.target.value)}
                 disabled={starting}
               />
+              <p className="text-xs text-muted-foreground">
+                区域要和该账号所属区域一致（如 us-east-1、eu-central-1），否则会找不到 profile。
+              </p>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={starting}>
                 取消
               </Button>
               <Button onClick={handleStart} disabled={starting}>
-                {starting ? '正在发起...' : '开始登录'}
+                {starting ? '正在发起...' : '获取登录链接'}
               </Button>
             </DialogFooter>
           </div>
         ) : (
           <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              在新打开的 AWS 页面完成登录并点击「Allow / 允许」授权(先核对验证码一致)。
-              授权后 AWS 页面不会自动关闭,手动回到本面板即可,会自动检测并建号。
-              若页面显示的是别的账号,请用浏览器无痕窗口打开授权链接。
-            </p>
-            <div className="rounded-md border p-4 text-center">
-              <div className="text-xs text-muted-foreground mb-1">验证码 (User Code)</div>
-              <div className="text-2xl font-mono font-bold tracking-widest">{session.userCode}</div>
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                第 1 步：点下面按钮打开授权链接（<b>建议用无痕窗口</b>，避免用到浏览器里已登录的其它账号），
+                用目标企业账号登录并授权。
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() =>
+                    window.open(session.authorizeUrl, '_blank', 'noopener,noreferrer')
+                  }
+                >
+                  打开授权页
+                </Button>
+                <Button variant="outline" onClick={handleCopyUrl}>
+                  复制链接
+                </Button>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-green-500" />
-              <span className="text-sm text-muted-foreground">等待浏览器完成授权...</span>
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                第 2 步：授权后浏览器会跳转到 <code>http://127.0.0.1/oauth/callback?code=...</code>，
+                页面会显示<b>无法访问（这是正常的）</b>。把地址栏里那条完整地址复制，粘贴到下面。
+              </p>
+              <textarea
+                className="flex min-h-[72px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                placeholder="http://127.0.0.1/oauth/callback?code=...&state=..."
+                value={redirectResponse}
+                onChange={(e) => setRedirectResponse(e.target.value)}
+                disabled={completing}
+              />
             </div>
             <DialogFooter className="flex-col sm:flex-row gap-2">
               <Button
                 variant="outline"
-                onClick={() =>
-                  window.open(session.verificationUriComplete, '_blank', 'noopener,noreferrer')
-                }
+                onClick={() => {
+                  setSession(null)
+                  setRedirectResponse('')
+                }}
+                disabled={completing}
               >
-                重新打开授权页面
+                上一步
               </Button>
-              <Button variant="outline" onClick={() => handleOpenChange(false)}>
-                取消
+              <Button onClick={handleComplete} disabled={completing}>
+                {completing ? '正在完成...' : '完成登录'}
               </Button>
             </DialogFooter>
           </div>

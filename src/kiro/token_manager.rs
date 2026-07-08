@@ -496,13 +496,20 @@ struct RegisterClientResponse {
     client_secret: String,
 }
 
-/// 注册一个 OIDC 公共客户端，返回 (clientId, clientSecret)
+/// 回调地址：与真实 Kiro 客户端保持一致。授权码流程要求注册与授权时使用完全相同的
+/// redirect_uri。面板无需真正监听该地址——用户在浏览器完成授权后会被重定向到
+/// `http://127.0.0.1/oauth/callback?code=...`（浏览器显示无法连接是正常的），
+/// 用户把地址栏里的 URL（或其中的 code）粘贴回面板即可。
+const IDC_REDIRECT_URI: &str = "http://127.0.0.1/oauth/callback";
+
+/// 注册一个 OIDC 公共客户端（授权码 + PKCE 流程），返回 (clientId, clientSecret)。
 ///
-/// 关键：企业版 IdC 必须带上 `issuerUrl`（= 访问门户 URL，即 startUrl）与 `grantTypes`。
-/// 缺失时 AWS 的 OIDC 仍会签发 token 并通过校验，但该 token 不会绑定到此 IdC 实例下的
-/// CodeWhisperer 应用，导致运行时返回 403「bearer token invalid」，且
-/// ListAvailableProfiles 返回空数组。AWS RegisterClient 文档原文：issuerUrl
-/// “is needed for user access to resources through the client”。
+/// 关键：企业版 IdC 只给「授权码 (authorization_code) + PKCE」流程签发的 token 授予
+/// CodeWhisperer 访问权限——这正是真实 Kiro 客户端使用的流程。设备码流程
+/// (device_code) 虽然能完成登录，但签出的 token 对 CodeWhisperer 零授权，表现为
+/// ListAvailableProfiles 返回空、实际调用时 403「bearer token invalid」。因此这里必须
+/// 注册 grantTypes=[authorization_code, refresh_token]、redirectUris=[127.0.0.1/oauth/callback]，
+/// 并带上 issuerUrl(= 门户 startUrl)。
 async fn register_client(
     config: &Config,
     region: &str,
@@ -512,13 +519,11 @@ async fn register_client(
     let url = format!("https://oidc.{}.amazonaws.com/client/register", region);
     let client = build_client(proxy, 30, config.tls_backend)?;
     let body = serde_json::json!({
-        "clientName": format!("kiro2cc-proxy-{}", uuid::Uuid::new_v4()),
+        "clientName": "Kiro IDE",
         "clientType": "public",
         "scopes": DEVICE_LOGIN_SCOPES,
-        "grantTypes": [
-            "urn:ietf:params:oauth:grant-type:device_code",
-            "refresh_token"
-        ],
+        "grantTypes": ["authorization_code", "refresh_token"],
+        "redirectUris": [IDC_REDIRECT_URI],
         "issuerUrl": start_url,
     });
     let resp = client
@@ -538,37 +543,94 @@ async fn register_client(
     Ok((data.client_id, data.client_secret))
 }
 
-/// StartDeviceAuthorization 响应
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StartDeviceAuthorizationResponse {
-    device_code: String,
-    user_code: String,
-    #[serde(default)]
-    verification_uri: String,
-    #[serde(default)]
-    verification_uri_complete: String,
-    #[serde(default)]
-    expires_in: i64,
-    #[serde(default)]
-    interval: i64,
+/// 生成 PKCE 的 (code_verifier, code_challenge)。challenge = base64url(sha256(verifier))，无 padding。
+fn generate_pkce() -> (String, String) {
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+    let mut bytes = [0u8; 64];
+    for b in bytes.iter_mut() {
+        *b = fastrand::u8(..);
+    }
+    let verifier = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    let challenge = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
 }
 
-/// 发起设备授权，返回设备码/用户码/验证链接
-async fn start_device_authorization(
+/// 构造授权码登录的 authorize URL，供用户在浏览器打开完成登录/授权。
+fn build_authorize_url(region: &str, client_id: &str, state: &str, code_challenge: &str) -> String {
+    let scopes = DEVICE_LOGIN_SCOPES.join(" ");
+    let enc = |s: &str| urlencoding::encode(s).into_owned();
+    format!(
+        "https://oidc.{}.amazonaws.com/authorize?response_type=code&client_id={}&redirect_uri={}\
+         &state={}&code_challenge_method=S256&code_challenge={}&scopes={}",
+        region,
+        enc(client_id),
+        enc(IDC_REDIRECT_URI),
+        enc(state),
+        enc(code_challenge),
+        enc(&scopes),
+    )
+}
+
+/// 从用户粘贴的回调内容中解析出 (code, state)。既支持完整回调 URL
+/// （`http://127.0.0.1/oauth/callback?code=...&state=...`），也支持只粘贴 code。
+fn parse_auth_code(input: &str) -> (Option<String>, Option<String>) {
+    let s = input.trim();
+    if s.is_empty() {
+        return (None, None);
+    }
+    if s.contains("code=") {
+        let query = s.rsplit('?').next().unwrap_or(s);
+        let mut code = None;
+        let mut state = None;
+        for pair in query.split('&') {
+            let mut it = pair.splitn(2, '=');
+            let k = it.next().unwrap_or("");
+            let v = it.next().unwrap_or("");
+            let v = urlencoding::decode(v)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|_| v.to_string());
+            match k {
+                "code" => code = Some(v),
+                "state" => state = Some(v),
+                _ => {}
+            }
+        }
+        (code, state)
+    } else {
+        (Some(s.to_string()), None)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTokenResponse {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+/// 用授权码 + PKCE verifier 换取 token，返回 (accessToken, refreshToken)。
+async fn create_token_authcode(
     config: &Config,
     region: &str,
     client_id: &str,
     client_secret: &str,
-    start_url: &str,
+    code: &str,
+    code_verifier: &str,
     proxy: Option<&ProxyConfig>,
-) -> anyhow::Result<StartDeviceAuthorizationResponse> {
-    let url = format!("https://oidc.{}.amazonaws.com/device_authorization", region);
+) -> anyhow::Result<(Option<String>, String)> {
+    let url = format!("https://oidc.{}.amazonaws.com/token", region);
     let client = build_client(proxy, 30, config.tls_backend)?;
     let body = serde_json::json!({
         "clientId": client_id,
         "clientSecret": client_secret,
-        "startUrl": start_url,
+        "grantType": "authorization_code",
+        "code": code,
+        "redirectUri": IDC_REDIRECT_URI,
+        "codeVerifier": code_verifier,
     });
     let resp = client
         .post(&url)
@@ -581,74 +643,13 @@ async fn start_device_authorization(
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
-        bail!("StartDeviceAuthorization 失败: {} {}", status, text);
+        bail!("CreateToken(authorization_code) 失败: {} {}", status, text);
     }
-    let data: StartDeviceAuthorizationResponse = serde_json::from_str(&text)?;
-    Ok(data)
-}
-
-/// CreateToken（设备码授权）轮询结果
-enum DeviceTokenOutcome {
-    /// 用户尚未完成授权，继续等待
-    Pending,
-    /// 授权完成
-    Complete { refresh_token: Option<String> },
-    /// 失败（过期/拒绝等）
-    Failed(String),
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct CreateTokenResponse {
-    #[serde(default)]
-    refresh_token: Option<String>,
-}
-
-/// 轮询一次 CreateToken（设备码授权）
-async fn create_token_device(
-    config: &Config,
-    region: &str,
-    client_id: &str,
-    client_secret: &str,
-    device_code: &str,
-    proxy: Option<&ProxyConfig>,
-) -> anyhow::Result<DeviceTokenOutcome> {
-    let url = format!("https://oidc.{}.amazonaws.com/token", region);
-    let client = build_client(proxy, 30, config.tls_backend)?;
-    let body = serde_json::json!({
-        "clientId": client_id,
-        "clientSecret": client_secret,
-        "grantType": "urn:ietf:params:oauth:grant-type:device_code",
-        "deviceCode": device_code,
-    });
-    let resp = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .header("x-amz-user-agent", IDC_AMZ_USER_AGENT)
-        .header("User-Agent", "node")
-        .json(&body)
-        .send()
-        .await?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    if status.is_success() {
-        let data: CreateTokenResponse = serde_json::from_str(&text)?;
-        return Ok(DeviceTokenOutcome::Complete {
-            refresh_token: data.refresh_token,
-        });
-    }
-    let err_code = serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|v| {
-            v.get("error")
-                .and_then(|e| e.as_str())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_default();
-    match err_code.as_str() {
-        "authorization_pending" | "slow_down" => Ok(DeviceTokenOutcome::Pending),
-        _ => Ok(DeviceTokenOutcome::Failed(format!("{} {}", status, text))),
-    }
+    let data: CreateTokenResponse = serde_json::from_str(&text)?;
+    let refresh_token = data
+        .refresh_token
+        .ok_or_else(|| anyhow::anyhow!("CreateToken 未返回 refreshToken"))?;
+    Ok((data.access_token, refresh_token))
 }
 
 // ============================================================================
@@ -858,7 +859,8 @@ pub struct MultiTokenManager {
 struct DeviceLoginSession {
     client_id: String,
     client_secret: String,
-    device_code: String,
+    code_verifier: String,
+    state: String,
     region: String,
     start_url: String,
     created_at: Instant,
@@ -2428,8 +2430,9 @@ impl MultiTokenManager {
 
     /// 发起设备授权登录：注册 OIDC 客户端 + 获取设备码，返回验证链接与会话 ID。
     ///
-    /// 用户在浏览器打开 `verification_uri_complete` 完成登录后，前端轮询
-    /// `poll_device_login` 即可自动创建账号。
+    /// 用户在浏览器打开返回的 `authorize_url` 完成登录/授权后，会被重定向到
+    /// `http://127.0.0.1/oauth/callback?code=...`（浏览器显示无法连接是正常的）；用户把
+    /// 该 URL（或其中的 code）粘贴回来调用 `poll_device_login` 即可换取 token 并自动创建账号。
     pub async fn start_device_login(
         &self,
         start_url: String,
@@ -2447,16 +2450,12 @@ impl MultiTokenManager {
         let proxy = self.proxy.clone();
         let (client_id, client_secret) =
             register_client(&self.config, &region, &start_url, proxy.as_ref()).await?;
-        let dev = start_device_authorization(
-            &self.config,
-            &region,
-            &client_id,
-            &client_secret,
-            &start_url,
-            proxy.as_ref(),
-        )
-        .await?;
+        let (code_verifier, code_challenge) = generate_pkce();
+        let state = uuid::Uuid::new_v4().to_string();
+        let authorize_url = build_authorize_url(&region, &client_id, &state, &code_challenge);
 
+        // 登录窗口：给用户足够时间在浏览器完成授权并把 code 粘贴回来
+        let expires_in: i64 = 900;
         let session_id = uuid::Uuid::new_v4().to_string();
         {
             let mut sessions = self.device_login_sessions.lock();
@@ -2468,39 +2467,45 @@ impl MultiTokenManager {
                 DeviceLoginSession {
                     client_id,
                     client_secret,
-                    device_code: dev.device_code,
+                    code_verifier,
+                    state,
                     region,
                     start_url: start_url.clone(),
                     created_at: Instant::now(),
-                    expires_in: dev.expires_in,
+                    expires_in,
                 },
             );
         }
 
         Ok(crate::admin::types::DeviceLoginStartResponse {
             session_id,
-            user_code: dev.user_code,
-            verification_uri: dev.verification_uri,
-            verification_uri_complete: dev.verification_uri_complete,
-            interval: if dev.interval > 0 { dev.interval } else { 5 },
-            expires_in: dev.expires_in,
+            authorize_url,
+            expires_in,
         })
     }
 
-    /// 轮询设备授权登录状态；用户完成授权后自动创建账号并返回其 ID。
+    /// 完成授权码登录：用用户粘贴回来的回调内容（含 code）换取 token，自动创建账号并返回其 ID。
     pub async fn poll_device_login(
         &self,
         session_id: &str,
+        redirect_response: &str,
     ) -> anyhow::Result<crate::admin::types::DeviceLoginPollResponse> {
         use crate::admin::types::DeviceLoginPollResponse;
 
-        let (client_id, client_secret, device_code, region, start_url) = {
+        let err = |m: String| DeviceLoginPollResponse {
+            status: "error".to_string(),
+            credential_id: None,
+            message: Some(m),
+        };
+
+        let (client_id, client_secret, code_verifier, expected_state, region, start_url) = {
             let sessions = self.device_login_sessions.lock();
             match sessions.get(session_id) {
                 Some(s) => (
                     s.client_id.clone(),
                     s.client_secret.clone(),
-                    s.device_code.clone(),
+                    s.code_verifier.clone(),
+                    s.state.clone(),
                     s.region.clone(),
                     s.start_url.clone(),
                 ),
@@ -2508,53 +2513,57 @@ impl MultiTokenManager {
             }
         };
 
+        // 从粘贴内容解析授权码（支持完整回调 URL 或纯 code）
+        let (code, state_opt) = parse_auth_code(redirect_response);
+        let code = match code {
+            Some(c) if !c.is_empty() => c,
+            _ => {
+                return Ok(err(
+                    "未能从粘贴内容中解析出授权码 code，请粘贴完整的回调 URL 或 code".to_string(),
+                ));
+            }
+        };
+        if let Some(st) = state_opt {
+            if st != expected_state {
+                return Ok(err(
+                    "state 不匹配（可能粘贴了旧的链接），请重新发起登录".to_string(),
+                ));
+            }
+        }
+
         let proxy = self.proxy.clone();
-        let outcome = create_token_device(
+        let refresh_token = match create_token_authcode(
             &self.config,
             &region,
             &client_id,
             &client_secret,
-            &device_code,
+            &code,
+            &code_verifier,
             proxy.as_ref(),
         )
-        .await?;
+        .await
+        {
+            Ok((_access, refresh)) => refresh,
+            Err(e) => return Ok(err(format!("换取 token 失败：{}", e))),
+        };
 
-        match outcome {
-            DeviceTokenOutcome::Pending => Ok(DeviceLoginPollResponse {
-                status: "pending".to_string(),
-                credential_id: None,
-                message: None,
-            }),
-            DeviceTokenOutcome::Failed(msg) => {
-                self.device_login_sessions.lock().remove(session_id);
-                Ok(DeviceLoginPollResponse {
-                    status: "error".to_string(),
-                    credential_id: None,
-                    message: Some(msg),
-                })
-            }
-            DeviceTokenOutcome::Complete { refresh_token } => {
-                let refresh_token = refresh_token
-                    .ok_or_else(|| anyhow::anyhow!("CreateToken 未返回 refreshToken"))?;
-                let new_cred = KiroCredentials {
-                    refresh_token: Some(refresh_token),
-                    client_id: Some(client_id),
-                    client_secret: Some(client_secret),
-                    auth_method: Some("idc".to_string()),
-                    region: Some(region),
-                    // 用门户地址派生一个可读名称，避免展示“账号 #N”
-                    nickname: nickname_from_start_url(&start_url),
-                    ..Default::default()
-                };
-                let credential_id = self.add_credential(new_cred).await?;
-                self.device_login_sessions.lock().remove(session_id);
-                Ok(DeviceLoginPollResponse {
-                    status: "complete".to_string(),
-                    credential_id: Some(credential_id),
-                    message: None,
-                })
-            }
-        }
+        let new_cred = KiroCredentials {
+            refresh_token: Some(refresh_token),
+            client_id: Some(client_id),
+            client_secret: Some(client_secret),
+            auth_method: Some("idc".to_string()),
+            region: Some(region),
+            // 用门户地址派生一个可读名称，避免展示“账号 #N”
+            nickname: nickname_from_start_url(&start_url),
+            ..Default::default()
+        };
+        let credential_id = self.add_credential(new_cred).await?;
+        self.device_login_sessions.lock().remove(session_id);
+        Ok(DeviceLoginPollResponse {
+            status: "complete".to_string(),
+            credential_id: Some(credential_id),
+            message: None,
+        })
     }
 
     /// 更新账号配置（Admin API）

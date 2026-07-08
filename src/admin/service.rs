@@ -259,13 +259,14 @@ impl AdminService {
             .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
     }
 
-    /// 轮询设备授权登录状态（完成时自动创建账号）
+    /// 完成授权码登录：用粘贴回来的 code 换取 token 并自动创建账号
     pub async fn poll_device_login(
         &self,
         session_id: &str,
+        redirect_response: &str,
     ) -> Result<DeviceLoginPollResponse, AdminServiceError> {
         self.token_manager
-            .poll_device_login(session_id)
+            .poll_device_login(session_id, redirect_response)
             .await
             .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
     }

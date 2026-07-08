@@ -253,12 +253,16 @@ pub async fn start_device_login(
 }
 
 /// POST /api/admin/device-login/poll
-/// 轮询设备授权登录状态（完成时自动创建账号）
+/// 完成授权码登录：用粘贴回来的 code 换取 token 并自动创建账号
 pub async fn poll_device_login(
     State(state): State<AdminState>,
     Json(payload): Json<PollDeviceLoginRequest>,
 ) -> impl IntoResponse {
-    match state.service.poll_device_login(&payload.session_id).await {
+    match state
+        .service
+        .poll_device_login(&payload.session_id, &payload.redirect_response)
+        .await
+    {
         Ok(response) => Json(response).into_response(),
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }

@@ -261,10 +261,8 @@ export interface StartDeviceLoginRequest {
 
 export interface DeviceLoginStartResponse {
   sessionId: string
-  userCode: string
-  verificationUri: string
-  verificationUriComplete: string
-  interval: number
+  /** 授权登录地址：用户在浏览器打开完成登录/授权 */
+  authorizeUrl: string
   expiresIn: number
 }
 

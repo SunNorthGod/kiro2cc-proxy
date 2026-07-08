@@ -114,12 +114,14 @@ export async function startDeviceLogin(
   return data
 }
 
-// 轮询设备授权登录状态
+// 完成授权码登录：提交粘贴回来的回调内容（含 code）换取 token
 export async function pollDeviceLogin(
-  sessionId: string
+  sessionId: string,
+  redirectResponse: string
 ): Promise<DeviceLoginPollResponse> {
   const { data } = await api.post<DeviceLoginPollResponse>('/device-login/poll', {
     sessionId,
+    redirectResponse,
   })
   return data
 }

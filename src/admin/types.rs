@@ -432,29 +432,26 @@ pub struct StartDeviceLoginRequest {
     pub region: Option<String>,
 }
 
-/// 发起设备授权登录响应
+/// 发起授权码登录响应
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeviceLoginStartResponse {
-    /// 轮询用的会话 ID
+    /// 完成登录用的会话 ID
     pub session_id: String,
-    /// 用户码（展示给用户核对）
-    pub user_code: String,
-    /// 验证地址
-    pub verification_uri: String,
-    /// 带用户码的验证地址（用户直接打开即可）
-    pub verification_uri_complete: String,
-    /// 轮询间隔（秒）
-    pub interval: i64,
+    /// 授权登录地址：用户在浏览器打开完成登录/授权
+    pub authorize_url: String,
     /// 有效期（秒）
     pub expires_in: i64,
 }
 
-/// 轮询设备授权登录请求
+/// 完成授权码登录请求
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PollDeviceLoginRequest {
     pub session_id: String,
+    /// 用户粘贴回来的回调内容：完整回调 URL（含 code/state）或纯 code
+    #[serde(default)]
+    pub redirect_response: String,
 }
 
 /// 轮询设备授权登录响应
