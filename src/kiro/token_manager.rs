@@ -2213,7 +2213,7 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("账号无 access_token"))?
         };
 
-        let credentials = {
+        let mut credentials = {
             let entries = self.entries.lock();
             entries
                 .iter()
@@ -2221,6 +2221,9 @@ impl MultiTokenManager {
                 .map(|e| e.credentials.clone())
                 .ok_or_else(|| anyhow::anyhow!("账号不存在: {}", id))?
         };
+
+        // 自愈：企业版 IdC 账号缺少 profileArn 时先获取并回写，否则 GetUsageLimits 会 400 "Invalid profileArn"
+        self.ensure_profile_arn(id, &mut credentials, &token).await;
 
         let effective_proxy = credentials.effective_proxy(self.proxy.as_ref());
         let usage_limits =

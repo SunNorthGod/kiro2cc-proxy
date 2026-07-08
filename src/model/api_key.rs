@@ -356,6 +356,13 @@ impl ApiKeyManager {
         }
 
         if let Some(d) = add_days {
+            // 永久卡密（无额度、无时长、无到期）不允许加时长，否则会被误转成时长卡
+            let is_permanent = api_key.credit_limit.is_none()
+                && api_key.duration_days.is_none()
+                && api_key.expires_at.is_none();
+            if is_permanent {
+                anyhow::bail!("永久卡密不支持增加时长");
+            }
             if api_key.is_active() && api_key.expires_at.is_some() {
                 // 活跃 Key：在当前到期时间上延长
                 let extension = chrono::Duration::milliseconds((d * 86_400_000.0) as i64);

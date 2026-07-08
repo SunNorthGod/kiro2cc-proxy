@@ -614,9 +614,11 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
                       {copiedId === apiKey.id ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
                     </Button>
                     <Switch checked={apiKey.enabled} onCheckedChange={() => handleToggleEnabled(apiKey)} />
-                    <Button variant="ghost" size="sm" onClick={() => openTopUp(apiKey)} title={apiKey.creditLimit != null ? '加额度' : '加时长'}>
-                      {apiKey.creditLimit != null ? <Coins className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
-                    </Button>
+                    {(apiKey.creditLimit != null || apiKey.durationDays != null || apiKey.expiresAt != null) && (
+                      <Button variant="ghost" size="sm" onClick={() => openTopUp(apiKey)} title={apiKey.creditLimit != null ? '加额度' : '加时长'}>
+                        {apiKey.creditLimit != null ? <Coins className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
+                      </Button>
+                    )}
                     <Button variant="ghost" size="sm" onClick={() => openEdit(apiKey)} title="编辑">
                       <Pencil className="h-4 w-4" />
                     </Button>

@@ -38,8 +38,9 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
   // 当对话框打开或凭据变化时，回填已有信息
   useEffect(() => {
     if (open) {
-      setAuthRegion(credential.authRegion || '')
-      setApiRegion(credential.apiRegion || '')
+      // Auth/API Region 若未单独设置，用账号的通用 region 回填展示
+      setAuthRegion(credential.authRegion || credential.region || '')
+      setApiRegion(credential.apiRegion || credential.region || '')
       setProfileArn(credential.profileArn || '')
       setNickname(credential.nickname || '')
       setEmail(credential.email || '')
@@ -57,8 +58,8 @@ export function EditCredentialDialog({ open, onOpenChange, credential }: EditCre
 
     // 构建更新字段：可见字段按“与原值不同才提交”，敏感字段（密钥/密码）留空表示不改
     const data: Record<string, string> = {}
-    if (authRegion !== (credential.authRegion || '')) data.authRegion = authRegion
-    if (apiRegion !== (credential.apiRegion || '')) data.apiRegion = apiRegion
+    if (authRegion !== (credential.authRegion || credential.region || '')) data.authRegion = authRegion
+    if (apiRegion !== (credential.apiRegion || credential.region || '')) data.apiRegion = apiRegion
     if (profileArn !== (credential.profileArn || '')) data.profileArn = profileArn
     if (nickname !== (credential.nickname || '')) data.nickname = nickname
     if (email !== (credential.email || '')) data.email = email
