@@ -604,6 +604,25 @@ impl KiroProvider {
     /// - 总重试次数 = min(可用池大小 × 每账号重试次数, MAX_TOTAL_RETRIES)
     /// - 硬上限 9 次，避免无限重试
     /// - 当可用池 ≤ 1 时，仅重试 3 次并使用更长退避间隔
+    /// 移除请求体顶层的指定字段（解析失败则原样返回）。
+    ///
+    /// 企业版 IdC(Enterprise) 的 Q 端点不接受顶层 `additionalModelRequestFields`，
+    /// 会返回 400 "additionalModelRequestFields is not supported for this model"。
+    /// 消费版 CodeWhisperer 端点则可容忍，因此仅对 IdC 账号剥离。
+    fn strip_top_level_field(body: &str, key: &str) -> String {
+        match serde_json::from_str::<serde_json::Value>(body) {
+            Ok(mut v) => {
+                if let Some(obj) = v.as_object_mut() {
+                    if obj.remove(key).is_none() {
+                        return body.to_string();
+                    }
+                }
+                serde_json::to_string(&v).unwrap_or_else(|_| body.to_string())
+            }
+            Err(_) => body.to_string(),
+        }
+    }
+
     async fn call_api_with_retry(
         &self,
         request_body: &str,
@@ -659,6 +678,18 @@ impl KiroProvider {
 
             let url = self.base_url_for(&ctx.credentials);
             let effective_body = Self::rewrite_profile_arn(request_body, &ctx.credentials);
+            // 企业版 IdC 端点不支持顶层 additionalModelRequestFields，剥离以避免 400
+            let effective_body = if ctx
+                .credentials
+                .auth_method
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("idc"))
+                .unwrap_or(false)
+            {
+                Self::strip_top_level_field(&effective_body, "additionalModelRequestFields")
+            } else {
+                effective_body
+            };
             let headers = match self.build_headers(&ctx, &effective_body, attempt) {
                 Ok(h) => h,
                 Err(e) => {

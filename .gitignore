@@ -27,6 +27,9 @@ logs/
 server.env
 .env
 
+# Local docker run dir (config + credentials + caches) — never commit
+/_run/
+
 # app/config sensitive files (keep config.json as example)
 /app/config/credentials*.json
 /app/config/api_keys.json
