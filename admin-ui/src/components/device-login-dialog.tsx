@@ -158,7 +158,9 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
         ) : (
           <div className="space-y-4">
             <p className="text-sm text-muted-foreground">
-              请在打开的浏览器页面确认下方验证码并完成登录。完成后本窗口会自动检测。
+              在新打开的 AWS 页面完成登录并点击「Allow / 允许」授权(先核对验证码一致)。
+              授权后 AWS 页面不会自动关闭,手动回到本面板即可,会自动检测并建号。
+              若页面显示的是别的账号,请用浏览器无痕窗口打开授权链接。
             </p>
             <div className="rounded-md border p-4 text-center">
               <div className="text-xs text-muted-foreground mb-1">验证码 (User Code)</div>

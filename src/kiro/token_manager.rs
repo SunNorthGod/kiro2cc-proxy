@@ -477,8 +477,17 @@ pub(crate) async fn list_available_profiles(
 // 设备授权登录（AWS SSO OIDC device authorization grant）
 // ============================================================================
 
-/// 设备授权登录使用的 scopes（CodeWhisperer / Kiro）
-const DEVICE_LOGIN_SCOPES: [&str; 2] = ["codewhisperer:completions", "codewhisperer:analysis"];
+/// 设备授权登录使用的 scopes（Amazon Q / Kiro 全功能集）。
+///
+/// 关键：`codewhisperer:conversations` 是聊天（generateAssistantResponse）所需的授权，
+/// 缺失会导致 403 "User is not authorized to make this call"。
+const DEVICE_LOGIN_SCOPES: [&str; 5] = [
+    "codewhisperer:completions",
+    "codewhisperer:analysis",
+    "codewhisperer:conversations",
+    "codewhisperer:transformations",
+    "codewhisperer:taskassist",
+];
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
