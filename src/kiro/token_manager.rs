@@ -1589,26 +1589,65 @@ impl MultiTokenManager {
             }
         }
         let effective_proxy = creds.effective_proxy(self.proxy.as_ref());
-        match list_available_profiles(creds, &self.config, token, effective_proxy.as_ref()).await {
-            Ok(Some(arn)) => {
-                creds.profile_arn = Some(arn.clone());
-                {
-                    let mut entries = self.entries.lock();
-                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-                        entry.credentials.profile_arn = Some(arn.clone());
-                    }
-                }
-                if let Err(e) = self.persist_credentials() {
-                    tracing::warn!("账号 #{} profileArn 回写失败: {}", id, e);
-                }
-                tracing::info!("账号 #{} 自动获取 profileArn 成功: {}", id, arn);
-            }
+        let region = creds.effective_api_region(&self.config).to_string();
+        let resolved = match list_available_profiles(creds, &self.config, token, effective_proxy.as_ref()).await {
+            Ok(Some(arn)) => Some(arn),
             Ok(None) => {
-                tracing::warn!("账号 #{} ListAvailableProfiles 返回空（无可用 profile）", id);
+                // ListAvailableProfiles 返回空：常见于同一企业目录里"新登录但未单独分配 profile"的账号。
+                // 回退到同区域内其它健康 IdC 账号已解析出的 profileArn（同一 AWS 账号/目录共享同一 profile）。
+                let sibling = {
+                    let entries = self.entries.lock();
+                    entries
+                        .iter()
+                        .find(|e| {
+                            e.id != id
+                                && e.credentials
+                                    .auth_method
+                                    .as_deref()
+                                    .map(|m| m.eq_ignore_ascii_case("idc"))
+                                    .unwrap_or(false)
+                                && e.credentials.effective_api_region(&self.config) == region
+                                && e.credentials
+                                    .profile_arn
+                                    .as_deref()
+                                    .map(|s| !s.is_empty())
+                                    .unwrap_or(false)
+                        })
+                        .and_then(|e| e.credentials.profile_arn.clone())
+                };
+                if let Some(ref arn) = sibling {
+                    tracing::info!(
+                        "账号 #{} ListAvailableProfiles 为空，回退复用同区域账号的 profileArn: {}",
+                        id,
+                        arn
+                    );
+                } else {
+                    tracing::warn!(
+                        "账号 #{} ListAvailableProfiles 返回空且无同区域可复用 profileArn（请在面板手动填写）",
+                        id
+                    );
+                }
+                sibling
             }
             Err(e) => {
                 tracing::warn!("账号 #{} 自动获取 profileArn 失败: {}", id, e);
+                // 失败时不永久占用去重标记，允许下次重试
+                self.profile_arn_attempted.lock().remove(&id);
+                None
             }
+        };
+        if let Some(arn) = resolved {
+            creds.profile_arn = Some(arn.clone());
+            {
+                let mut entries = self.entries.lock();
+                if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                    entry.credentials.profile_arn = Some(arn.clone());
+                }
+            }
+            if let Err(e) = self.persist_credentials() {
+                tracing::warn!("账号 #{} profileArn 回写失败: {}", id, e);
+            }
+            tracing::info!("账号 #{} profileArn 已设置: {}", id, arn);
         }
     }
 
