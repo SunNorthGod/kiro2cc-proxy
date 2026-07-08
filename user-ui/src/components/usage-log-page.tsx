@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, RefreshCw, ChevronLeft, ChevronRight, BarChart3, DollarSign } from 'lucide-react'
+import { ArrowLeft, RefreshCw, ChevronLeft, ChevronRight, BarChart3, Coins } from 'lucide-react'
 import { getUsageRecords } from '@/api/user'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -23,10 +23,6 @@ function getModelColor(model: string): string {
     if (lower.includes(key)) return cls
   }
   return 'text-muted-foreground'
-}
-
-function formatCost(n: number) {
-  return `$${n.toFixed(4)}`
 }
 
 function formatTokens(n: number) {
@@ -63,7 +59,6 @@ export function UsageLogPage({ onBack }: UsageLogPageProps) {
     return acc
   }, {})
 
-  const pageCost = allRecords.reduce((s, r) => s + r.estimatedCost, 0)
   const pageCredits = allRecords.reduce((s, r) => s + (r.creditsUsed ?? r.estimatedCost / 0.72), 0)
   const pageCreditsSaved = allRecords.reduce((s, r) => s + (r.creditsSaved ?? 0), 0)
 
@@ -126,19 +121,9 @@ export function UsageLogPage({ onBack }: UsageLogPageProps) {
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-                    <DollarSign className="h-3.5 w-3.5" />
-                    本页费用
+                    <Coins className="h-3.5 w-3.5" />
+                    本页 Credits
                   </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-2xl font-bold text-orange-600 dark:text-orange-400">
-                    {formatCost(pageCost)}
-                  </div>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm font-medium text-muted-foreground">本页 Credits</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
@@ -166,7 +151,7 @@ export function UsageLogPage({ onBack }: UsageLogPageProps) {
                           <span>{m.requests} 次</span>
                           <span>入 {formatTokens(m.inputTokens)}</span>
                           <span>出 {formatTokens(m.outputTokens)}</span>
-                          <span className="font-medium text-orange-600 dark:text-orange-400">{formatCost(m.cost)}</span>
+                          <span className="font-medium text-blue-600 dark:text-blue-400">{(m.cost / 0.72).toFixed(2)} credits</span>
                         </div>
                       </CardContent>
                     </Card>
@@ -186,7 +171,6 @@ export function UsageLogPage({ onBack }: UsageLogPageProps) {
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground">IP</th>
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground">模型</th>
                         <th className="text-left px-4 py-3 font-medium text-muted-foreground">Token 用量</th>
-                        <th className="text-right px-4 py-3 font-medium text-muted-foreground">费用</th>
                         <th className="text-right px-4 py-3 font-medium text-muted-foreground">Kiro Credits</th>
                       </tr>
                     </thead>
@@ -218,9 +202,6 @@ export function UsageLogPage({ onBack }: UsageLogPageProps) {
                                 <div className="text-green-600 dark:text-green-400">缓存读取：<span className="tabular-nums">{formatTokens(r.cacheReadInputTokens ?? 0)}</span></div>
                                 <div className="font-medium">输入总计：<span className="tabular-nums">{formatTokens(r.inputTokens)}</span></div>
                               </div>
-                            </td>
-                            <td className="px-4 py-3 text-right tabular-nums font-medium text-orange-600 dark:text-orange-400">
-                              {formatCost(r.estimatedCost)}
                             </td>
                             <td className="px-4 py-3 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
                               {r.creditsUsed != null ? r.creditsUsed.toFixed(4) : (r.estimatedCost / 0.72).toFixed(4)}

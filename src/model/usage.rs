@@ -388,7 +388,8 @@ impl UsageTracker {
         Ok(())
     }
 
-    /// 获取指定 API Key 的累计费用（轻量版，仅算总费用）
+    /// 获取指定 API Key 的累计费用（美元估算，内部保留；全链路已改用 credits）
+    #[allow(dead_code)]
     pub fn get_total_cost(&self, api_key_id: u32) -> f64 {
         let records = self.records.read();
         records

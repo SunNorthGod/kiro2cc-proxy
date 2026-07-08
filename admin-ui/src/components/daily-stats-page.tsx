@@ -47,7 +47,6 @@ export function DailyStatsPage({ onBack, onViewDay, showBack = true }: DailyStat
                   <tr className="border-b bg-muted/50">
                     <th className="text-left px-4 py-2 font-medium text-muted-foreground">日期</th>
                     <th className="text-right px-4 py-2 font-medium text-muted-foreground">请求数</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">费用 ($)</th>
                     <th className="text-right px-4 py-2 font-medium text-muted-foreground">Credits</th>
                   </tr>
                 </thead>
@@ -60,9 +59,6 @@ export function DailyStatsPage({ onBack, onViewDay, showBack = true }: DailyStat
                     >
                       <td className="px-4 py-2 font-medium">{formatDate(row.date)}</td>
                       <td className="px-4 py-2 text-right tabular-nums">{row.totalRequests}</td>
-                      <td className="px-4 py-2 text-right tabular-nums font-medium text-orange-600 dark:text-orange-400">
-                        ${row.totalCost.toFixed(4)}
-                      </td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
                         <div>{row.totalCredits.toFixed(4)}</div>
                         {row.totalCreditsSaved != null && row.totalCreditsSaved > 0 && (

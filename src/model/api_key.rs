@@ -148,7 +148,7 @@ impl ApiKeyManager {
     /// 从文件加载，文件不存在则创建空列表
     pub fn load<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let keys = if path.exists() {
+        let mut keys: Vec<ApiKey> = if path.exists() {
             let content = fs::read_to_string(&path)?;
             if content.trim().is_empty() {
                 Vec::new()
@@ -158,10 +158,31 @@ impl ApiKeyManager {
         } else {
             Vec::new()
         };
-        Ok(Self {
+
+        // 迁移：历史上的美元额度(spending_limit)一律转为积分额度(credit_limit)。
+        // 全链路只用 credits 计量，迁移后 spending_limit 永久置空。
+        let mut migrated = false;
+        for k in keys.iter_mut() {
+            if let Some(old_usd_limit) = k.spending_limit.take() {
+                if k.credit_limit.is_none() {
+                    k.credit_limit = Some(old_usd_limit);
+                }
+                migrated = true;
+            }
+        }
+
+        let manager = Self {
             keys: RwLock::new(keys),
             file_path: path,
-        })
+        };
+        if migrated {
+            if let Err(e) = manager.save() {
+                tracing::warn!("API Key 额度迁移(美元→积分)持久化失败: {}", e);
+            } else {
+                tracing::info!("已将历史 API Key 的美元额度迁移为积分额度");
+            }
+        }
+        Ok(manager)
     }
 
     /// 持久化到文件

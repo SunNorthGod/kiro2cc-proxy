@@ -261,10 +261,7 @@ pub struct CreateApiKeyRequest {
     /// 过期时间（可选，ISO 8601 格式）— 按日期模式
     #[serde(default)]
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// 额度限制（美元）— 按额度模式
-    #[serde(default)]
-    pub spending_limit: Option<f64>,
-    /// 额度限制（真实 Kiro credits）— 与 spending_limit 独立
+    /// 额度限制（真实 Kiro credits）— 按额度模式（全链路只用 credits）
     #[serde(default)]
     pub credit_limit: Option<f64>,
     /// 有效期天数（懒激活模式）
@@ -288,10 +285,7 @@ pub struct UpdateApiKeyRequest {
     /// 过期时间（null 表示永不过期）
     #[serde(default, deserialize_with = "deserialize_optional_datetime")]
     pub expires_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
-    /// 额度限制（null 表示不限额）
-    #[serde(default, deserialize_with = "deserialize_optional_f64")]
-    pub spending_limit: Option<Option<f64>>,
-    /// credits 额度限制（null 表示不按 credits 限额）
+    /// credits 额度限制（null 表示不限额，全链路只用 credits）
     #[serde(default, deserialize_with = "deserialize_optional_f64")]
     pub credit_limit: Option<Option<f64>>,
     /// 有效期天数（懒激活模式）

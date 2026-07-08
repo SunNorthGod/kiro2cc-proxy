@@ -133,38 +133,16 @@ pub async fn auth_middleware(
             ApiKeyAuthResult::Valid {
                 id,
                 name,
-                spending_limit,
                 credit_limit,
                 bound_credential_ids,
+                ..
             } => {
                 // 懒激活：首次使用时激活 key
                 if let Err(e) = manager.activate_key(id) {
                     tracing::warn!(api_key_id = id, error = %e, "激活 API Key 失败");
                 }
 
-                // 额度检查
-                if let (Some(limit), Some(tracker)) = (spending_limit, &state.usage_tracker) {
-                    let total_cost = tracker.get_total_cost(id);
-                    if total_cost >= limit {
-                        tracing::warn!(
-                            api_key_id = id,
-                            api_key_name = %name,
-                            total_cost = total_cost,
-                            spending_limit = limit,
-                            "API Key 额度已用尽"
-                        );
-                        let error = ErrorResponse::new(
-                            "forbidden",
-                            format!(
-                                "API key spending limit exceeded. Used: ${:.2}, Limit: ${:.2}",
-                                total_cost, limit
-                            ),
-                        );
-                        return (StatusCode::FORBIDDEN, Json(error)).into_response();
-                    }
-                }
-
-                // credits 额度检查（按真实 Kiro credits 计量，与 spending_limit 独立）
+                // credits 额度检查（全链路只按真实 Kiro credits 计量）
                 if let (Some(limit), Some(tracker)) = (credit_limit, &state.usage_tracker) {
                     let total_credits = tracker.get_total_credits(id);
                     if total_credits >= limit {

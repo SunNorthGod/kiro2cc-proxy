@@ -840,9 +840,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
                   <div className="text-xl font-bold text-blue-600 dark:text-blue-400">
                     {todayStats.totalCredits.toFixed(2)} Credits
                   </div>
-                  <div className="text-sm text-orange-600 dark:text-orange-400 font-medium mt-0.5">
-                    ${todayStats.totalCost.toFixed(4)}
-                  </div>
                 </div>
               ) : (
                 <div className="text-2xl font-bold text-muted-foreground">—</div>

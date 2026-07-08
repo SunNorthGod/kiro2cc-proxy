@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 import { useState } from 'react'
-import { ArrowLeft, BarChart3, DollarSign, RefreshCw } from 'lucide-react'
+import { ArrowLeft, BarChart3, Coins, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -29,10 +29,6 @@ function getModelColor(model: string): string {
 
 function formatTokens(n: number): string {
   return n.toLocaleString('zh-CN')
-}
-
-function formatCost(cost: number): string {
-  return `$${cost.toFixed(4)}`
 }
 
 function formatDate(dateStr: string): string {
@@ -120,27 +116,17 @@ export function ApiKeyDetailPage({ keyId, onBack }: ApiKeyDetailPageProps) {
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <DollarSign className="h-3.5 w-3.5" />
-              总费用
+              <Coins className="h-3.5 w-3.5" />
+              总消耗 (credits)
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-orange-600 dark:text-orange-400">
-              {formatCost(summary?.totalCost ?? 0)}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">总 Credits</CardTitle>
-          </CardHeader>
-          <CardContent>
             <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-              {((summary?.totalCost ?? 0) / 0.72).toFixed(4)}
+              {(summary?.totalCredits ?? (summary?.totalCost ?? 0) / 0.72).toFixed(2)}
             </div>
             {summary?.totalCreditsSaved != null && summary.totalCreditsSaved > 0 && (
               <div className="text-xs text-green-600 dark:text-green-400 mt-0.5">
-                省 {summary.totalCreditsSaved.toFixed(4)}
+                省 {summary.totalCreditsSaved.toFixed(2)}
               </div>
             )}
           </CardContent>
@@ -160,7 +146,7 @@ export function ApiKeyDetailPage({ keyId, onBack }: ApiKeyDetailPageProps) {
                     <span>{m.requests} 次</span>
                     <span>入 {formatTokens(m.inputTokens)}</span>
                     <span>出 {formatTokens(m.outputTokens)}</span>
-                    <span className="font-medium text-orange-600 dark:text-orange-400">{formatCost(m.cost)}</span>
+                    <span className="font-medium text-blue-600 dark:text-blue-400">{(m.cost / 0.72).toFixed(2)} credits</span>
                   </div>
                 </CardContent>
               </Card>
@@ -197,7 +183,6 @@ export function ApiKeyDetailPage({ keyId, onBack }: ApiKeyDetailPageProps) {
                       <th className="text-left px-4 py-2 font-medium text-muted-foreground">账号</th>
                       <th className="text-left px-4 py-2 font-medium text-muted-foreground">模型</th>
                       <th className="text-left px-4 py-2 font-medium text-muted-foreground">Token 用量</th>
-                      <th className="text-right px-4 py-2 font-medium text-muted-foreground">费用</th>
                       <th className="text-right px-4 py-2 font-medium text-muted-foreground">Kiro Credits</th>
                     </tr>
                   </thead>
@@ -231,9 +216,6 @@ export function ApiKeyDetailPage({ keyId, onBack }: ApiKeyDetailPageProps) {
                             <div className="text-green-600 dark:text-green-400">缓存读取：<span className="tabular-nums">{formatTokens(record.cacheReadInputTokens ?? 0)}</span></div>
                             <div className="font-medium">输入总计：<span className="tabular-nums">{formatTokens(record.inputTokens)}</span></div>
                           </div>
-                        </td>
-                        <td className="px-4 py-2 text-right tabular-nums font-medium text-orange-600 dark:text-orange-400">
-                          {formatCost(record.estimatedCost)}
                         </td>
                         <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
                           {record.creditsUsed != null ? record.creditsUsed.toFixed(4) : (record.estimatedCost / 0.72).toFixed(4)}

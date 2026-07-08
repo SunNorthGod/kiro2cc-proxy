@@ -55,7 +55,7 @@ pub async fn create_api_key(
     match manager.create(
         payload.name,
         payload.expires_at,
-        payload.spending_limit,
+        None, // 美元额度已废弃，全链路只用 credits
         payload.credit_limit,
         payload.duration_days,
         payload.bound_credential_ids,
@@ -85,7 +85,7 @@ pub async fn update_api_key(
         payload.name,
         payload.enabled,
         payload.expires_at,
-        payload.spending_limit,
+        None, // 美元额度已废弃，全链路只用 credits
         payload.credit_limit,
         payload.duration_days,
         payload.bound_credential_ids,

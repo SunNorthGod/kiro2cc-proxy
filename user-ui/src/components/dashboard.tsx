@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
-  LogOut, RefreshCw, Activity, Zap, DollarSign, Clock,
+  LogOut, RefreshCw, Activity, Zap, Coins, Clock,
   ArrowUpFromLine, ArrowDownToLine, FileText,
 } from 'lucide-react'
 import { getUsage } from '@/api/user'
@@ -32,7 +32,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
 
   const formatTokens = (n: number) => n.toLocaleString('zh-CN')
 
-  const formatCost = (n: number) => `$${n.toFixed(4)}`
+  const formatCredits = (n: number) => `${n.toFixed(2)} credits`
 
   const formatDate = (iso: string | null) => {
     if (!iso) return null
@@ -49,14 +49,14 @@ export function Dashboard({ onLogout }: DashboardProps) {
       const expired = new Date(data.expiresAt) < new Date()
       if (expired) return <Badge variant="destructive">已过期</Badge>
     }
-    if (data.spendingLimit && data.totalCost >= data.spendingLimit) {
+    if (data.creditLimit && data.totalCredits >= data.creditLimit) {
       return <Badge variant="destructive">额度已用完</Badge>
     }
     return <Badge variant="success">正常</Badge>
   }
 
-  const spendingPercent = data?.spendingLimit
-    ? Math.min((data.totalCost / data.spendingLimit) * 100, 100)
+  const spendingPercent = data?.creditLimit
+    ? Math.min((data.totalCredits / data.creditLimit) * 100, 100)
     : null
 
   if (isLoading) {
@@ -132,11 +132,11 @@ export function Dashboard({ onLogout }: DashboardProps) {
                 )}
               </div>
               {/* 额度进度条 */}
-              {data.spendingLimit && spendingPercent !== null && (
+              {data.creditLimit && spendingPercent !== null && (
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-sm">
                     <span className="text-muted-foreground">额度使用</span>
-                    <span>{formatCost(data.totalCost)} / {formatCost(data.spendingLimit)}</span>
+                    <span>{formatCredits(data.totalCredits)} / {formatCredits(data.creditLimit)}</span>
                   </div>
                   <Progress value={spendingPercent} />
                 </div>
@@ -178,10 +178,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
             <Card>
               <CardContent className="pt-6">
                 <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
-                  <DollarSign className="h-3.5 w-3.5" />
-                  总费用
+                  <Coins className="h-3.5 w-3.5" />
+                  总消耗
                 </div>
-                <div className="text-2xl font-bold">{formatCost(data.totalCost)}</div>
+                <div className="text-2xl font-bold">{formatCredits(data.totalCredits)}</div>
               </CardContent>
             </Card>
           </div>
@@ -204,7 +204,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-sm font-medium">{formatCost(m.cost)}</div>
+                      <div className="text-sm font-medium">{formatCredits(m.cost / 0.72)}</div>
                       <div className="text-xs text-muted-foreground mt-0.5">
                         {formatTokens(m.inputTokens)} in / {formatTokens(m.outputTokens)} out
                       </div>
