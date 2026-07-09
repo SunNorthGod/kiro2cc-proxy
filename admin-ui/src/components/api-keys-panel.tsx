@@ -32,14 +32,14 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
   const [newMode, setNewMode] = useState<'date' | 'quota'>('quota')
   const [newDuration, setNewDuration] = useState<number | null>(1) // 数值，null 表示永不过期
   const [newDurationUnit, setNewDurationUnit] = useState<'days' | 'hours'>('days')
-  const [newSpendingLimit, setNewSpendingLimit] = useState(200)
+  const [newSpendingLimit, setNewSpendingLimit] = useState(1000)
   const [newBoundCredentialIds, setNewBoundCredentialIds] = useState<number[]>([])
   const [editName, setEditName] = useState('')
   const [editMode, setEditMode] = useState<'date' | 'quota'>('date')
   const [editDuration, setEditDuration] = useState<number | null | string>(1)
   const [editDurationUnit, setEditDurationUnit] = useState<'days' | 'hours'>('days')
   const [editBoundCredentialIds, setEditBoundCredentialIds] = useState<number[]>([])
-  const [editSpendingLimit, setEditSpendingLimit] = useState(50)
+  const [editSpendingLimit, setEditSpendingLimit] = useState(1000)
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const [copiedMaster, setCopiedMaster] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState(false)
@@ -91,7 +91,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
 
   const openTopUp = (key: ApiKeyItem) => {
     setTopUpTarget(key)
-    setTopUpValue(key.creditLimit != null ? '100' : '30')
+    setTopUpValue(key.creditLimit != null ? '1000' : '30')
   }
 
   const submitTopUp = () => {
@@ -224,7 +224,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
           setNewMode('quota')
           setNewDuration(1)
           setNewDurationUnit('days')
-          setNewSpendingLimit(200)
+          setNewSpendingLimit(1000)
           setNewBoundCredentialIds([])
         },
         onError: (err) => toast.error(`创建失败: ${extractErrorMessage(err)}`),
@@ -294,7 +294,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
       setEditDuration(1)
     } else {
       setEditMode('date')
-      setEditSpendingLimit(50)
+      setEditSpendingLimit(1000)
       if (key.durationDays != null && key.durationDays < 1) {
         setEditDuration(Math.round(key.durationDays * 24 * 100) / 100)
         setEditDurationUnit('hours')
@@ -751,7 +751,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
               <div>
                 <label className="text-sm font-medium">额度上限（Kiro credits）</label>
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {[50, 200, 500].map((amount) => (
+                  {[1000, 2000, 5000, 10000].map((amount) => (
                     <Button
                       key={amount}
                       type="button"
@@ -973,7 +973,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
               {topUpIsCredits ? '增加额度（credits）' : '增加天数'}
             </label>
             <div className="flex flex-wrap gap-2">
-              {(topUpIsCredits ? [50, 100, 200, 500] : [7, 30, 90, 180]).map((amount) => (
+              {(topUpIsCredits ? [1000, 2000, 5000, 10000] : [7, 30, 90, 180]).map((amount) => (
                 <Button
                   key={amount}
                   type="button"
