@@ -20,7 +20,8 @@ use crate::http_client::{ProxyConfig, build_client};
 use crate::kiro::machine_id;
 use crate::kiro::model::credentials::KiroCredentials;
 use crate::kiro::model::token_refresh::{
-    IdcRefreshRequest, IdcRefreshResponse, RefreshRequest, RefreshResponse,
+    ExternalIdpRefreshResponse, IdcRefreshRequest, IdcRefreshResponse, RefreshRequest,
+    RefreshResponse,
 };
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
@@ -155,7 +156,9 @@ pub(crate) async fn refresh_token(
         }
     });
 
-    if auth_method.eq_ignore_ascii_case("idc")
+    if auth_method.eq_ignore_ascii_case("external_idp") {
+        refresh_external_idp_token(credentials, config, proxy).await
+    } else if auth_method.eq_ignore_ascii_case("idc")
         || auth_method.eq_ignore_ascii_case("builder-id")
         || auth_method.eq_ignore_ascii_case("iam")
     {
@@ -352,6 +355,109 @@ async fn refresh_idc_token(
     Ok(new_credentials)
 }
 
+/// 从 OIDC issuer 的 discovery 文档解析 token_endpoint（token_endpoint 缺失时的兜底）。
+async fn discover_external_idp_token_endpoint(
+    issuer_url: &str,
+    config: &Config,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<String> {
+    let url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer_url.trim_end_matches('/')
+    );
+    let client = build_client(proxy, 30, config.tls_backend)?;
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        bail!("OIDC discovery 失败: {} {}", resp.status(), url);
+    }
+    let doc: serde_json::Value = resp.json().await?;
+    doc.get("token_endpoint")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("OIDC discovery 未返回 token_endpoint"))
+}
+
+/// 刷新 External IdP Token（客户自有 IdP，如 Microsoft Entra / Kiro 企业版）
+///
+/// external_idp 账号的 token 由客户企业 IdP 直接签发。刷新走标准 OIDC public client 流程：
+/// `POST token_endpoint`（表单）`grant_type=refresh_token&client_id=..&refresh_token=..&scope=..`
+/// 返回新的 access_token（作为 Bearer 打 `runtime.{region}.kiro.dev`）+ 轮换的 refresh_token。
+/// 无需 client_secret（公共客户端）。
+async fn refresh_external_idp_token(
+    credentials: &KiroCredentials,
+    config: &Config,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<KiroCredentials> {
+    tracing::info!("正在刷新 External IdP Token...");
+
+    let refresh_token = credentials.refresh_token.as_ref().unwrap();
+    let client_id = credentials
+        .client_id
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("External IdP 刷新需要 clientId"))?;
+
+    // token_endpoint 优先用存储值；缺失则从 issuer_url 做 OIDC discovery 兜底
+    let token_endpoint = match credentials.token_endpoint.as_deref() {
+        Some(ep) if !ep.is_empty() => ep.to_string(),
+        _ => {
+            let issuer = credentials.issuer_url.as_deref().filter(|s| !s.is_empty()).ok_or_else(
+                || anyhow::anyhow!("External IdP 刷新需要 tokenEndpoint 或 issuerUrl"),
+            )?;
+            discover_external_idp_token_endpoint(issuer, config, proxy).await?
+        }
+    };
+
+    let client = build_client(proxy, 60, config.tls_backend)?;
+    let mut form: Vec<(&str, &str)> = vec![
+        ("grant_type", "refresh_token"),
+        ("client_id", client_id.as_str()),
+        ("refresh_token", refresh_token.as_str()),
+    ];
+    if let Some(scopes) = credentials.scopes.as_deref().filter(|s| !s.is_empty()) {
+        form.push(("scope", scopes));
+    }
+
+    let response = client
+        .post(&token_endpoint)
+        .header("Accept", "application/json")
+        .form(&form)
+        .send()
+        .await?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body_text = response.text().await.unwrap_or_default();
+        let error_msg = match status.as_u16() {
+            400 | 401 => "External IdP 凭证已过期或无效，需要重新登录",
+            403 => "权限不足，无法刷新 Token",
+            429 => "请求过于频繁，已被限流",
+            500..=599 => "服务器错误，IdP 服务暂时不可用",
+            _ => "External IdP Token 刷新失败",
+        };
+        bail!("{}: {} {}", error_msg, status, body_text);
+    }
+
+    let data: ExternalIdpRefreshResponse = response.json().await?;
+
+    let mut new_credentials = credentials.clone();
+    new_credentials.access_token = Some(data.access_token);
+
+    if let Some(new_refresh_token) = data.refresh_token {
+        new_credentials.refresh_token = Some(new_refresh_token);
+    }
+
+    if let Some(expires_in) = data.expires_in {
+        let expires_at = Utc::now() + Duration::seconds(expires_in);
+        new_credentials.expires_at = Some(expires_at.to_rfc3339());
+    }
+
+    Ok(new_credentials)
+}
+
 /// getUsageLimits API 所需的 x-amz-user-agent header 前缀
 const USAGE_LIMITS_AMZ_USER_AGENT_PREFIX: &str = "aws-sdk-js/1.0.0";
 
@@ -436,7 +542,13 @@ pub(crate) async fn list_available_profiles(
     token: &str,
     proxy: Option<&ProxyConfig>,
 ) -> anyhow::Result<Option<String>> {
-    let host = format!("q.{}.amazonaws.com", region);
+    let is_ext = credentials.is_external_idp();
+    // external_idp（企业版）走 Kiro 控制面 management.{region}.kiro.dev；其余账号走 AWS 直连
+    let host = if is_ext {
+        format!("management.{}.kiro.dev", region)
+    } else {
+        format!("q.{}.amazonaws.com", region)
+    };
     let url = format!("https://{}/ListAvailableProfiles", host);
     let machine_id = machine_id::generate_from_credentials(credentials, config).unwrap_or_default();
     let kiro_version = &config.kiro_version;
@@ -447,7 +559,7 @@ pub(crate) async fn list_available_profiles(
     );
     let amz_user_agent = format!("aws-sdk-js/1.0.0 KiroIDE-{}-{}", kiro_version, machine_id);
     let client = build_client(proxy, 30, config.tls_backend)?;
-    let response = client
+    let mut req = client
         .post(&url)
         .header("Content-Type", "application/x-amz-json-1.0")
         .header("x-amz-user-agent", &amz_user_agent)
@@ -456,10 +568,12 @@ pub(crate) async fn list_available_profiles(
         .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
         .header("amz-sdk-request", "attempt=1; max=1")
         .header("Authorization", format!("Bearer {}", token))
-        .header("Connection", "close")
-        .body("{}")
-        .send()
-        .await?;
+        .header("Connection", "close");
+    if is_ext {
+        // 告知 Kiro 控制面该 Bearer 是客户 IdP 直签 token
+        req = req.header("TokenType", "EXTERNAL_IDP");
+    }
+    let response = req.body("{}").send().await?;
     let status = response.status();
     let body_text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -1633,7 +1747,8 @@ impl MultiTokenManager {
             .as_deref()
             .map(|m| m.eq_ignore_ascii_case("idc"))
             .unwrap_or(false);
-        if !is_idc {
+        let is_ext = creds.is_external_idp();
+        if !is_idc && !is_ext {
             return;
         }
         {
@@ -1645,11 +1760,17 @@ impl MultiTokenManager {
         let effective_proxy = creds.effective_proxy(self.proxy.as_ref());
         let current_region = creds.effective_api_region(&self.config).to_string();
 
-        // 候选区域：当前区域优先，其余常见 Q Developer 区域兜底。企业账号的 CodeWhisperer
-        // profile 可能不在登录目录所在区域（例如目录在 us-east-1、profile 却在 eu-central-1），
-        // 因此逐区域探测；找到后同时把该区域设为账号的 apiRegion。
+        // 候选区域：当前区域优先，其余区域兜底。external_idp 走 Kiro 控制面（仅
+        // us-east-1 / eu-central-1 / us-gov-west-1 提供）；其余账号用常见 Q Developer 区域。
+        // 企业账号的 profile 可能不在登录目录所在区域，因此逐区域探测；找到后设为账号 apiRegion。
+        const KIRO_DEV_CANDIDATE_REGIONS: [&str; 3] = ["us-east-1", "eu-central-1", "us-gov-west-1"];
+        let candidates: &[&str] = if is_ext {
+            &KIRO_DEV_CANDIDATE_REGIONS
+        } else {
+            &IDC_CANDIDATE_REGIONS
+        };
         let mut regions: Vec<String> = vec![current_region.clone()];
-        for r in IDC_CANDIDATE_REGIONS {
+        for &r in candidates {
             if !regions.iter().any(|x| x == r) {
                 regions.push(r.to_string());
             }
@@ -2751,6 +2872,27 @@ impl MultiTokenManager {
                 None
             } else {
                 Some(cs.clone())
+            };
+        }
+        if let Some(ref te) = update.token_endpoint {
+            cred.token_endpoint = if te.trim().is_empty() {
+                None
+            } else {
+                Some(te.clone())
+            };
+        }
+        if let Some(ref iu) = update.issuer_url {
+            cred.issuer_url = if iu.trim().is_empty() {
+                None
+            } else {
+                Some(iu.clone())
+            };
+        }
+        if let Some(ref sc) = update.scopes {
+            cred.scopes = if sc.trim().is_empty() {
+                None
+            } else {
+                Some(sc.clone())
             };
         }
         if let Some(ref pa) = update.profile_arn {

@@ -158,27 +158,36 @@ impl KiroProvider {
     }
 
     /// 获取账号级 API 基础 URL
+    ///
+    /// external_idp（企业版）账号走 Kiro 数据面 `runtime.{region}.kiro.dev`，
+    /// 其余账号走 AWS 直连的 `q.{region}.amazonaws.com`。
     fn base_url_for(&self, credentials: &KiroCredentials) -> String {
-        format!(
-            "https://q.{}.amazonaws.com/generateAssistantResponse",
-            credentials.effective_api_region(self.token_manager.config())
-        )
+        let region = credentials.effective_api_region(self.token_manager.config());
+        if credentials.is_external_idp() {
+            format!("https://runtime.{}.kiro.dev/generateAssistantResponse", region)
+        } else {
+            format!("https://q.{}.amazonaws.com/generateAssistantResponse", region)
+        }
     }
 
     /// 获取账号级 MCP API URL
     fn mcp_url_for(&self, credentials: &KiroCredentials) -> String {
-        format!(
-            "https://q.{}.amazonaws.com/mcp",
-            credentials.effective_api_region(self.token_manager.config())
-        )
+        let region = credentials.effective_api_region(self.token_manager.config());
+        if credentials.is_external_idp() {
+            format!("https://runtime.{}.kiro.dev/mcp", region)
+        } else {
+            format!("https://q.{}.amazonaws.com/mcp", region)
+        }
     }
 
     /// 获取账号级 API 基础域名
     fn base_domain_for(&self, credentials: &KiroCredentials) -> String {
-        format!(
-            "q.{}.amazonaws.com",
-            credentials.effective_api_region(self.token_manager.config())
-        )
+        let region = credentials.effective_api_region(self.token_manager.config());
+        if credentials.is_external_idp() {
+            format!("runtime.{}.kiro.dev", region)
+        } else {
+            format!("q.{}.amazonaws.com", region)
+        }
     }
 
     /// 从请求体中提取模型信息
@@ -222,6 +231,24 @@ impl KiroProvider {
             .get("agentContinuationId")?
             .as_str()
             .map(|s| s.to_string())
+    }
+
+    /// 为 external_idp（Kiro 企业版）账号追加专属请求头。
+    ///
+    /// - `TokenType: EXTERNAL_IDP`：告知 runtime.kiro.dev 该 Bearer 是客户 IdP 直签的 token。
+    /// - `x-amzn-kiro-profile-arn`：企业版 profileArn 通过 header 传递（同时也保留在 body 内）。
+    ///
+    /// 说明：HTTP header 名大小写不敏感，此处用小写 `tokentype`（http crate 要求静态名小写）。
+    fn apply_external_idp_headers(headers: &mut HeaderMap, credentials: &KiroCredentials) {
+        if !credentials.is_external_idp() {
+            return;
+        }
+        headers.insert("tokentype", HeaderValue::from_static("EXTERNAL_IDP"));
+        if let Some(arn) = credentials.profile_arn.as_deref()
+            && let Ok(v) = HeaderValue::from_str(arn)
+        {
+            headers.insert("x-amzn-kiro-profile-arn", v);
+        }
     }
 
     /// 构建请求头
@@ -288,6 +315,7 @@ impl KiroProvider {
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", ctx.token)).unwrap(),
         );
+        Self::apply_external_idp_headers(&mut headers, &ctx.credentials);
         Ok(headers)
     }
 
@@ -334,6 +362,7 @@ impl KiroProvider {
             "Authorization",
             HeaderValue::from_str(&format!("Bearer {}", ctx.token)).unwrap(),
         );
+        Self::apply_external_idp_headers(&mut headers, &ctx.credentials);
         Ok(headers)
     }
 

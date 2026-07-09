@@ -106,6 +106,15 @@ pub struct AddCredentialRequest {
     /// OIDC Client Secret（IdC 认证需要）
     pub client_secret: Option<String>,
 
+    /// External IdP token 端点（external_idp 认证：客户 IdP 的 OIDC token endpoint）
+    pub token_endpoint: Option<String>,
+
+    /// External IdP issuer URL（external_idp 认证：用于 OIDC discovery 兜底）
+    pub issuer_url: Option<String>,
+
+    /// External IdP OAuth scopes（external_idp 认证：空格分隔）
+    pub scopes: Option<String>,
+
     /// Profile ARN（可选，企业版 IdC 账号需要；留空则首次调用时自动获取）
     pub profile_arn: Option<String>,
 
@@ -175,6 +184,15 @@ pub struct UpdateCredentialRequest {
 
     /// OIDC Client Secret（可选）
     pub client_secret: Option<String>,
+
+    /// External IdP token 端点（可选）
+    pub token_endpoint: Option<String>,
+
+    /// External IdP issuer URL（可选）
+    pub issuer_url: Option<String>,
+
+    /// External IdP OAuth scopes（可选）
+    pub scopes: Option<String>,
 
     /// Profile ARN（可选，企业版 IdC 账号需要）
     pub profile_arn: Option<String>,

@@ -43,3 +43,15 @@ pub struct IdcRefreshResponse {
     #[serde(default)]
     pub expires_in: Option<i64>,
 }
+
+/// External IdP Token 刷新响应体（标准 OAuth2 token 响应，如 Microsoft Entra）
+///
+/// 客户自有 IdP 直接返回标准 OAuth2 字段（snake_case），因此不使用 camelCase 重命名。
+#[derive(Debug, Deserialize)]
+pub struct ExternalIdpRefreshResponse {
+    pub access_token: String,
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub expires_in: Option<i64>,
+}

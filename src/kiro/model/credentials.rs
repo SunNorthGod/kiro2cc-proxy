@@ -47,6 +47,18 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_secret: Option<String>,
 
+    /// External IdP token 端点（external_idp 认证：客户 IdP 的 OIDC token endpoint，用于刷新）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_endpoint: Option<String>,
+
+    /// External IdP issuer URL（用于 OIDC discovery 兜底解析 token_endpoint）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer_url: Option<String>,
+
+    /// External IdP OAuth scopes（空格分隔，刷新时作为 scope 参数）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scopes: Option<String>,
+
     /// 账号优先级（数字越小优先级越高，默认为 0）
     #[serde(default)]
     #[serde(skip_serializing_if = "is_zero")]
@@ -291,6 +303,17 @@ impl KiroCredentials {
             None => true,
         }
     }
+
+    /// 是否为 External IdP 账号（客户自有 IdP，如 Microsoft Entra / Kiro 企业版）。
+    ///
+    /// 这类账号走 `runtime.{region}.kiro.dev` 数据面 + `management.{region}.kiro.dev` 控制面，
+    /// 而非 AWS 直连的 `q.{region}.amazonaws.com`。
+    pub fn is_external_idp(&self) -> bool {
+        self.auth_method
+            .as_deref()
+            .map(|m| m.eq_ignore_ascii_case("external_idp"))
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
@@ -333,6 +356,9 @@ mod tests {
             id: None,
             access_token: Some("token".to_string()),
             refresh_token: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             profile_arn: None,
             expires_at: None,
             auth_method: Some("social".to_string()),
@@ -459,6 +485,9 @@ mod tests {
             client_secret: None,
             priority: 0,
             region: Some("eu-west-1".to_string()),
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             auth_region: None,
             api_region: None,
             machine_id: None,
@@ -488,6 +517,9 @@ mod tests {
             auth_method: None,
             client_id: None,
             client_secret: None,
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             priority: 0,
             region: None,
             auth_region: None,
@@ -596,6 +628,9 @@ mod tests {
             id: Some(42),
             access_token: Some("token".to_string()),
             refresh_token: Some("refresh".to_string()),
+            token_endpoint: None,
+            issuer_url: None,
+            scopes: None,
             profile_arn: None,
             expires_at: None,
             auth_method: Some("social".to_string()),

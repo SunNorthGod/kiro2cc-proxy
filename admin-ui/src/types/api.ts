@@ -69,11 +69,14 @@ export interface SetPriorityRequest {
 // 添加凭据请求
 export interface AddCredentialRequest {
   refreshToken: string
-  authMethod?: 'social' | 'idc'
+  authMethod?: 'social' | 'idc' | 'external_idp'
   email?: string
   nickname?: string
   clientId?: string
   clientSecret?: string
+  tokenEndpoint?: string
+  issuerUrl?: string
+  scopes?: string
   profileArn?: string
   priority?: number
   authRegion?: string
@@ -92,6 +95,9 @@ export interface UpdateCredentialRequest {
   nickname?: string
   clientId?: string
   clientSecret?: string
+  tokenEndpoint?: string
+  issuerUrl?: string
+  scopes?: string
   profileArn?: string
   authRegion?: string
   apiRegion?: string
