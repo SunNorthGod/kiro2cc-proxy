@@ -13,6 +13,8 @@ pub enum EventType {
     AssistantResponse,
     /// 工具使用事件
     ToolUse,
+    /// 推理内容事件（模型原生扩展思考）
+    ReasoningContent,
     /// 计费事件
     Metering,
     /// 上下文使用率事件
@@ -29,6 +31,7 @@ impl EventType {
         match s {
             "assistantResponseEvent" => Self::AssistantResponse,
             "toolUseEvent" => Self::ToolUse,
+            "reasoningContentEvent" => Self::ReasoningContent,
             "meteringEvent" => Self::Metering,
             "contextUsageEvent" => Self::ContextUsage,
             "codeReferenceEvent" => Self::CodeReference,
@@ -41,6 +44,7 @@ impl EventType {
         match self {
             Self::AssistantResponse => "assistantResponseEvent",
             Self::ToolUse => "toolUseEvent",
+            Self::ReasoningContent => "reasoningContentEvent",
             Self::Metering => "meteringEvent",
             Self::ContextUsage => "contextUsageEvent",
             Self::CodeReference => "codeReferenceEvent",
@@ -72,6 +76,8 @@ pub enum Event {
     AssistantResponse(super::AssistantResponseEvent),
     /// 工具使用
     ToolUse(super::ToolUseEvent),
+    /// 推理内容（模型原生扩展思考）
+    ReasoningContent(super::ReasoningContentEvent),
     /// 计费
     Metering(super::MeteringEvent),
     /// 上下文使用率
@@ -122,6 +128,10 @@ impl Event {
             EventType::ToolUse => {
                 let payload = super::ToolUseEvent::from_frame(&frame)?;
                 Ok(Self::ToolUse(payload))
+            }
+            EventType::ReasoningContent => {
+                let payload = super::ReasoningContentEvent::from_frame(&frame)?;
+                Ok(Self::ReasoningContent(payload))
             }
             EventType::Metering => {
                 tracing::debug!(

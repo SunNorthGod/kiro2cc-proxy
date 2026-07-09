@@ -693,6 +693,7 @@ pub async fn post_messages(
             &payload.model,
             input_tokens,
             prefix_estimated_tokens,
+            thinking_enabled,
             usage_tracker,
             api_key_id,
             prompt_cache_usage,
@@ -911,6 +912,7 @@ async fn handle_non_stream_request(
     model: &str,
     input_tokens: i32,
     prefix_estimated_tokens: i32,
+    thinking_enabled: bool,
     usage_tracker: Option<std::sync::Arc<crate::model::usage::UsageTracker>>,
     api_key_id: Option<u32>,
     prompt_cache_usage: crate::cache::PromptCacheUsage,
@@ -949,6 +951,8 @@ async fn handle_non_stream_request(
     }
 
     let mut text_content = String::new();
+    let mut reasoning_content = String::new();
+    let mut reasoning_signature: Option<String> = None;
     let mut tool_uses: Vec<serde_json::Value> = Vec::new();
     let mut has_tool_use = false;
     let mut stop_reason = "end_turn".to_string();
@@ -969,6 +973,16 @@ async fn handle_non_stream_request(
                     match event {
                         Event::AssistantResponse(resp) => {
                             text_content.push_str(&resp.content);
+                        }
+                        Event::ReasoningContent(reasoning) => {
+                            // 原生推理内容：仅当客户端请求了 thinking 时才收集，
+                            // 拆成独立 thinking 块（携带模型真实签名）。
+                            if thinking_enabled {
+                                reasoning_content.push_str(reasoning.text_str());
+                                if let Some(sig) = reasoning.signature_str() {
+                                    reasoning_signature = Some(sig.to_string());
+                                }
+                            }
                         }
                         Event::ToolUse(tool_use) => {
                             has_tool_use = true;
@@ -1056,23 +1070,44 @@ async fn handle_non_stream_request(
     // 构建响应内容
     let mut content: Vec<serde_json::Value> = Vec::new();
 
-    // 将开头的 <thinking>...</thinking> 拆成独立 thinking 块（供 opencode 等客户端显示推理）
-    let (thinking_opt, text_body) = split_thinking_and_text(&text_content);
-    if let Some(thinking) = thinking_opt {
-        if !thinking.is_empty() {
+    if !reasoning_content.is_empty() {
+        // 原生推理路径：推理内容来自独立的 reasoningContentEvent，
+        // text_content 即最终正文（不含内联 <thinking> 标签）。
+        // 签名优先使用模型下发的真实签名，缺失时兜底伪造。
+        content.push(json!({
+            "type": "thinking",
+            "thinking": reasoning_content,
+            "signature": reasoning_signature
+                .clone()
+                .unwrap_or_else(super::stream::generate_fake_signature)
+        }));
+
+        if !text_content.is_empty() {
             content.push(json!({
-                "type": "thinking",
-                "thinking": thinking,
-                "signature": ""
+                "type": "text",
+                "text": text_content
             }));
         }
-    }
+    } else {
+        // 内联路径：将开头的 <thinking>...</thinking> 拆成独立 thinking 块（供 opencode 等客户端显示推理）。
+        // signature 用兜底伪造值填充（长度 >= 100），避免空签名导致部分客户端拒绝渲染思考块。
+        let (thinking_opt, text_body) = split_thinking_and_text(&text_content);
+        if let Some(thinking) = thinking_opt {
+            if !thinking.is_empty() {
+                content.push(json!({
+                    "type": "thinking",
+                    "thinking": thinking,
+                    "signature": super::stream::generate_fake_signature()
+                }));
+            }
+        }
 
-    if !text_body.is_empty() {
-        content.push(json!({
-            "type": "text",
-            "text": text_body
-        }));
+        if !text_body.is_empty() {
+            content.push(json!({
+                "type": "text",
+                "text": text_body
+            }));
+        }
     }
 
     content.extend(tool_uses);
@@ -1518,6 +1553,7 @@ pub async fn post_messages_cc(
             &payload.model,
             input_tokens,
             prefix_estimated_tokens,
+            thinking_enabled,
             usage_tracker,
             api_key_id,
             prompt_cache_usage,

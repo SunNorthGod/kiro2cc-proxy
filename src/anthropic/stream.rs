@@ -644,6 +644,12 @@ pub struct StreamContext {
     strip_thinking_leading_newline: bool,
     /// signature_delta 是否已发送（签名只能在 content_block_stop 之前发送一次）
     signature_sent: bool,
+    /// 是否走原生推理路径（收到过 reasoningContentEvent）
+    /// 一旦为 true，assistantResponseEvent 的内容视为最终正文（纯文本），
+    /// 不再按内联 `<thinking>` 标签解析。
+    native_reasoning: bool,
+    /// 模型下发的真实推理签名（reasoningContentEvent.signature）
+    native_signature: Option<String>,
     /// 用量追踪器（可选）
     usage_tracker: Option<Arc<UsageTracker>>,
     /// API Key ID（用于用量记录）
@@ -692,6 +698,8 @@ impl StreamContext {
             text_block_index: None,
             strip_thinking_leading_newline: false,
             signature_sent: false,
+            native_reasoning: false,
+            native_signature: None,
             usage_tracker: None,
             api_key_id: None,
             credential_id: None,
@@ -800,6 +808,15 @@ impl StreamContext {
         match event {
             Event::AssistantResponse(resp) => self.process_assistant_response(&resp.content),
             Event::ToolUse(tool_use) => self.process_tool_use(tool_use),
+            Event::ReasoningContent(reasoning) => {
+                // 仅当客户端请求了 thinking 时才把原生推理内容作为 thinking 块透出，
+                // 避免给未请求思考的客户端返回意料之外的 thinking 块。
+                if self.thinking_enabled {
+                    self.process_reasoning_content(reasoning)
+                } else {
+                    Vec::new()
+                }
+            }
             Event::ContextUsage(context_usage) => {
                 // contextUsage 本地化：仅保留事件接收用于 stop_reason 兜底判定，
                 // 不再用 percentage × window 反算 input_tokens。
@@ -876,6 +893,18 @@ impl StreamContext {
 
     /// 处理助手响应事件
     fn process_assistant_response(&mut self, content: &str) -> Vec<SseEvent> {
+        // 原生推理路径：已经收到过 reasoningContentEvent，说明推理内容通过独立事件下发，
+        // 此时 assistantResponseEvent 的内容即最终正文（纯文本）。需先关闭 thinking 块，
+        // 再把内容作为普通文本发送，绝不再按内联 <thinking> 标签解析。
+        if self.native_reasoning {
+            let mut events = self.close_native_reasoning_block();
+            if !content.is_empty() {
+                self.output_tokens += estimate_tokens(content);
+                events.extend(self.create_text_delta_events(content));
+            }
+            return events;
+        }
+
         if content.is_empty() {
             return Vec::new();
         }
@@ -891,6 +920,76 @@ impl StreamContext {
         // 非 thinking 模式同样复用统一的 text_delta 发送逻辑，
         // 以便在 tool_use 自动关闭文本块后能够自愈重建新的文本块，避免“吞字”。
         self.create_text_delta_events(content)
+    }
+
+    /// 处理原生推理内容事件（reasoningContentEvent）
+    ///
+    /// 将推理文本增量转成 Anthropic thinking 块的 thinking_delta，
+    /// 并缓存模型下发的真实签名，待 thinking 块关闭前作为 signature_delta 注入。
+    fn process_reasoning_content(
+        &mut self,
+        reasoning: &crate::kiro::model::events::ReasoningContentEvent,
+    ) -> Vec<SseEvent> {
+        // thinking 块已经关闭（正文已开始），迟到的推理内容直接丢弃，避免破坏事件序列。
+        if self.thinking_extracted {
+            return Vec::new();
+        }
+
+        self.native_reasoning = true;
+        let mut events = Vec::new();
+
+        // 缓存真实签名（通常在推理结束时下发一次）
+        if let Some(sig) = reasoning.signature_str() {
+            self.native_signature = Some(sig.to_string());
+        }
+
+        let text = reasoning.text_str();
+        if !text.is_empty() {
+            // 首个推理文本：创建 thinking 块（索引 0，早于 text 块）
+            if self.thinking_block_index.is_none() {
+                let thinking_index = self.state_manager.next_block_index();
+                self.thinking_block_index = Some(thinking_index);
+                self.in_thinking_block = true;
+                let start_events = self.state_manager.handle_content_block_start(
+                    thinking_index,
+                    "thinking",
+                    json!({
+                        "type": "content_block_start",
+                        "index": thinking_index,
+                        "content_block": {
+                            "type": "thinking",
+                            "thinking": ""
+                        }
+                    }),
+                );
+                events.extend(start_events);
+            }
+
+            if let Some(thinking_index) = self.thinking_block_index {
+                events.push(self.create_thinking_delta_event(thinking_index, text));
+            }
+        }
+
+        events
+    }
+
+    /// 关闭原生推理 thinking 块：发送空 thinking_delta + signature_delta + content_block_stop。
+    /// 幂等：仅当仍在 thinking 块内时才实际发送事件。
+    fn close_native_reasoning_block(&mut self) -> Vec<SseEvent> {
+        let mut events = Vec::new();
+        if self.in_thinking_block
+            && let Some(thinking_index) = self.thinking_block_index
+        {
+            events.push(self.create_thinking_delta_event(thinking_index, ""));
+            // 注入 signature_delta（优先使用模型真实签名，缺失时兜底伪造）
+            events.extend(self.take_signature_events());
+            if let Some(stop_event) = self.state_manager.handle_content_block_stop(thinking_index) {
+                events.push(stop_event);
+            }
+        }
+        self.in_thinking_block = false;
+        self.thinking_extracted = true;
+        events
     }
 
     /// 处理包含thinking块的内容
@@ -1255,7 +1354,11 @@ impl StreamContext {
         };
 
         let mut events = Vec::new();
-        let signature_content = generate_fake_signature();
+        // 优先使用模型下发的真实推理签名；缺失时兜底伪造（长度需 >= 100 以通过客户端校验）。
+        let signature_content = self
+            .native_signature
+            .clone()
+            .unwrap_or_else(generate_fake_signature);
 
         let chunk_size = 40;
         let chunks: Vec<&str> = signature_content
@@ -1337,6 +1440,11 @@ impl StreamContext {
     /// 生成最终事件序列
     pub fn generate_final_events(&mut self) -> Vec<SseEvent> {
         let mut events = Vec::new();
+
+        // 原生推理路径：流结束时若 thinking 块仍开着（推理后没有正文），先关闭它。
+        if self.native_reasoning && self.in_thinking_block {
+            events.extend(self.close_native_reasoning_block());
+        }
 
         // Flush thinking_buffer 中的剩余内容
         if self.thinking_enabled && !self.thinking_buffer.is_empty() {
@@ -1678,7 +1786,7 @@ impl BufferedStreamContext {
     }
 }
 
-fn generate_fake_signature() -> String {
+pub(crate) fn generate_fake_signature() -> String {
     const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let len = 160;
     let mut sig = String::with_capacity(len + 2);
@@ -2258,6 +2366,90 @@ mod tests {
             .map(|e| e.data["delta"]["thinking"].as_str().unwrap_or(""))
             .filter(|s| !s.is_empty())
             .collect()
+    }
+
+    #[test]
+    fn test_native_reasoning_emits_thinking_then_text_with_real_signature() {
+        use crate::kiro::model::events::{Event, ReasoningContentEvent};
+        let mut ctx = StreamContext::new_with_thinking("claude-opus-4.8", 1, true);
+        let mut all = ctx.generate_initial_events();
+        // 两段推理文本 + 一个真实签名，来自独立的 reasoningContentEvent
+        all.extend(ctx.process_kiro_event(&Event::ReasoningContent(
+            ReasoningContentEvent::new(Some("step one ".to_string()), None),
+        )));
+        all.extend(ctx.process_kiro_event(&Event::ReasoningContent(
+            ReasoningContentEvent::new(Some("step two".to_string()), None),
+        )));
+        all.extend(ctx.process_kiro_event(&Event::ReasoningContent(
+            ReasoningContentEvent::new(None, Some("REAL_SIGNATURE_VALUE".to_string())),
+        )));
+        // 正文（assistantResponseEvent）
+        all.extend(ctx.process_assistant_response("final answer"));
+        all.extend(ctx.generate_final_events());
+
+        // 推理内容拼接正确
+        assert_eq!(collect_thinking_content(&all), "step one step two");
+        // 正文正确
+        assert!(collect_text_content(&all).contains("final answer"));
+
+        // thinking 块必须在 text 块之前
+        let thinking_start = all.iter().position(|e| {
+            e.event == "content_block_start" && e.data["content_block"]["type"] == "thinking"
+        });
+        let text_start = all.iter().position(|e| {
+            e.event == "content_block_start" && e.data["content_block"]["type"] == "text"
+        });
+        assert!(thinking_start.is_some(), "应存在 thinking 块");
+        assert!(text_start.is_some(), "应存在 text 块");
+        assert!(
+            thinking_start.unwrap() < text_start.unwrap(),
+            "thinking 块必须早于 text 块"
+        );
+
+        // 使用模型真实签名
+        let sig: String = all
+            .iter()
+            .filter(|e| {
+                e.event == "content_block_delta" && e.data["delta"]["type"] == "signature_delta"
+            })
+            .map(|e| e.data["delta"]["signature"].as_str().unwrap_or(""))
+            .collect();
+        assert_eq!(sig, "REAL_SIGNATURE_VALUE", "应透传模型真实签名");
+
+        // thinking 块必须在 text 块开始之前关闭
+        let thinking_stop = all.iter().position(|e| e.event == "content_block_stop");
+        assert!(thinking_stop.is_some());
+        assert!(
+            thinking_stop.unwrap() < text_start.unwrap(),
+            "thinking 块必须在正文开始前关闭"
+        );
+    }
+
+    #[test]
+    fn test_native_reasoning_dropped_when_thinking_disabled() {
+        use crate::kiro::model::events::{Event, ReasoningContentEvent};
+        let mut ctx = StreamContext::new_with_thinking("claude-opus-4.8", 1, false);
+        let mut all = ctx.generate_initial_events();
+        all.extend(ctx.process_kiro_event(&Event::ReasoningContent(
+            ReasoningContentEvent::new(
+                Some("secret reasoning".to_string()),
+                Some("sig".to_string()),
+            ),
+        )));
+        all.extend(ctx.process_assistant_response("answer"));
+        all.extend(ctx.generate_final_events());
+
+        // 未请求 thinking：不产生 thinking 块，推理内容被丢弃
+        assert!(
+            collect_thinking_content(&all).is_empty(),
+            "未启用 thinking 时推理内容必须被丢弃"
+        );
+        assert!(
+            !all.iter().any(|e| e.event == "content_block_start"
+                && e.data["content_block"]["type"] == "thinking"),
+            "未启用 thinking 时不应有 thinking 块"
+        );
+        assert!(collect_text_content(&all).contains("answer"));
     }
 
     /// 辅助函数：从事件列表中提取所有 text_delta 的拼接内容

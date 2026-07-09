@@ -9,6 +9,7 @@ mod code_reference;
 mod context_usage;
 
 mod metering;
+mod reasoning;
 mod tool_use;
 
 pub use assistant::AssistantResponseEvent;
@@ -17,4 +18,5 @@ pub use code_reference::CodeReferenceEvent;
 pub use context_usage::ContextUsageEvent;
 
 pub use metering::MeteringEvent;
+pub use reasoning::ReasoningContentEvent;
 pub use tool_use::ToolUseEvent;
