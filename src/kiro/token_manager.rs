@@ -424,18 +424,19 @@ pub(crate) async fn get_usage_limits(
     Ok(data)
 }
 
-/// 调用 ListAvailableProfiles 获取账号的 profileArn（Enterprise/IdC 账号必需）。
+/// 调用 ListAvailableProfiles 获取账号在指定区域的 profileArn（Enterprise/IdC 账号必需）。
 ///
-/// 端点：`POST https://codewhisperer.{region}.amazonaws.com/ListAvailableProfiles`
-/// （body `{}`，Bearer token）。返回第一个可用 profile 的 ARN，无 profile 时返回 None。
+/// 端点：`POST https://q.{region}.amazonaws.com/ListAvailableProfiles`（body `{}`，Bearer token）。
+/// 注意用 `q.{region}` 而非 `codewhisperer.{region}`——后者仅 us-east-1 存在，前者各区域可用，
+/// 便于跨区域探测（企业账号的 profile 可能不在登录目录所在区域）。返回该区域第一个 profile 的 ARN。
 pub(crate) async fn list_available_profiles(
+    region: &str,
     credentials: &KiroCredentials,
     config: &Config,
     token: &str,
     proxy: Option<&ProxyConfig>,
 ) -> anyhow::Result<Option<String>> {
-    let region = credentials.effective_api_region(config);
-    let host = format!("codewhisperer.{}.amazonaws.com", region);
+    let host = format!("q.{}.amazonaws.com", region);
     let url = format!("https://{}/ListAvailableProfiles", host);
     let machine_id = machine_id::generate_from_credentials(credentials, config).unwrap_or_default();
     let kiro_version = &config.kiro_version;
@@ -1640,65 +1641,69 @@ impl MultiTokenManager {
             }
         }
         let effective_proxy = creds.effective_proxy(self.proxy.as_ref());
-        let region = creds.effective_api_region(&self.config).to_string();
-        let resolved = match list_available_profiles(creds, &self.config, token, effective_proxy.as_ref()).await {
-            Ok(Some(arn)) => Some(arn),
-            Ok(None) => {
-                // ListAvailableProfiles 返回空：常见于同一企业目录里"新登录但未单独分配 profile"的账号。
-                // 回退到同区域内其它健康 IdC 账号已解析出的 profileArn（同一 AWS 账号/目录共享同一 profile）。
-                let sibling = {
-                    let entries = self.entries.lock();
-                    entries
-                        .iter()
-                        .find(|e| {
-                            e.id != id
-                                && e.credentials
-                                    .auth_method
-                                    .as_deref()
-                                    .map(|m| m.eq_ignore_ascii_case("idc"))
-                                    .unwrap_or(false)
-                                && e.credentials.effective_api_region(&self.config) == region
-                                && e.credentials
-                                    .profile_arn
-                                    .as_deref()
-                                    .map(|s| !s.is_empty())
-                                    .unwrap_or(false)
-                        })
-                        .and_then(|e| e.credentials.profile_arn.clone())
-                };
-                if let Some(ref arn) = sibling {
-                    tracing::info!(
-                        "账号 #{} ListAvailableProfiles 为空，回退复用同区域账号的 profileArn: {}",
-                        id,
-                        arn
-                    );
+        let current_region = creds.effective_api_region(&self.config).to_string();
+
+        // 候选区域：当前区域优先，其余常见 Q Developer 区域兜底。企业账号的 CodeWhisperer
+        // profile 可能不在登录目录所在区域（例如目录在 us-east-1、profile 却在 eu-central-1），
+        // 因此逐区域探测；找到后同时把该区域设为账号的 apiRegion。
+        let mut regions: Vec<String> = vec![current_region.clone()];
+        for r in IDC_CANDIDATE_REGIONS {
+            if !regions.iter().any(|x| x == r) {
+                regions.push(r.to_string());
+            }
+        }
+
+        let mut found: Option<(String, String)> = None;
+        let mut had_error = false;
+        for region in &regions {
+            match list_available_profiles(region, creds, &self.config, token, effective_proxy.as_ref())
+                .await
+            {
+                Ok(Some(arn)) => {
+                    found = Some((region.clone(), arn));
+                    break;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    had_error = true;
+                    tracing::debug!("账号 #{} 在区域 {} 探测 profile 失败: {}", id, region, e);
+                }
+            }
+        }
+
+        match found {
+            Some((region, arn)) => {
+                let region_changed = region != current_region;
+                creds.profile_arn = Some(arn.clone());
+                if region_changed {
+                    creds.api_region = Some(region.clone());
+                }
+                {
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                        entry.credentials.profile_arn = Some(arn.clone());
+                        if region_changed {
+                            entry.credentials.api_region = Some(region.clone());
+                        }
+                    }
+                }
+                if let Err(e) = self.persist_credentials() {
+                    tracing::warn!("账号 #{} profileArn 回写失败: {}", id, e);
+                }
+                tracing::info!("账号 #{} profileArn 已设置: {}（API 区域: {}）", id, arn, region);
+            }
+            None => {
+                if had_error {
+                    // 探测出错（网络/区域临时问题），撤销去重标记以便下次重试
+                    self.profile_arn_attempted.lock().remove(&id);
+                    tracing::warn!("账号 #{} 探测 profileArn 出错，稍后重试", id);
                 } else {
                     tracing::warn!(
-                        "账号 #{} ListAvailableProfiles 返回空且无同区域可复用 profileArn（请在面板手动填写）",
+                        "账号 #{} 在所有候选区域均无可用 profile（该账号可能未订阅/未分配 Q Developer）",
                         id
                     );
                 }
-                sibling
             }
-            Err(e) => {
-                tracing::warn!("账号 #{} 自动获取 profileArn 失败: {}", id, e);
-                // 失败时不永久占用去重标记，允许下次重试
-                self.profile_arn_attempted.lock().remove(&id);
-                None
-            }
-        };
-        if let Some(arn) = resolved {
-            creds.profile_arn = Some(arn.clone());
-            {
-                let mut entries = self.entries.lock();
-                if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
-                    entry.credentials.profile_arn = Some(arn.clone());
-                }
-            }
-            if let Err(e) = self.persist_credentials() {
-                tracing::warn!("账号 #{} profileArn 回写失败: {}", id, e);
-            }
-            tracing::info!("账号 #{} profileArn 已设置: {}", id, arn);
         }
     }
 
