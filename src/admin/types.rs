@@ -432,6 +432,9 @@ pub struct StartDeviceLoginRequest {
     /// 区域（可选，默认使用全局配置）
     #[serde(default)]
     pub region: Option<String>,
+    /// 账号名称 / 备注（可选）：用于在列表中区分账号，如 "4F1GTc-user85"。
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 /// 发起授权码登录响应

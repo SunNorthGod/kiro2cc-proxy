@@ -31,6 +31,8 @@ export interface SubKey {
   expiresAt: string | null
   durationDays: number | null
   activatedAt: string | null
+  /** 计算后的状态：active / pending / expired / disabled */
+  status: string
 }
 
 /** 子卡密管理概览（共享额度池） */

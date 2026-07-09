@@ -24,6 +24,7 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
   const queryClient = useQueryClient()
   const [startUrl, setStartUrl] = useState('')
   const [region, setRegion] = useState('')
+  const [name, setName] = useState('')
   const [starting, setStarting] = useState(false)
   const [session, setSession] = useState<DeviceLoginStartResponse | null>(null)
   const [redirectResponse, setRedirectResponse] = useState('')
@@ -32,10 +33,34 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
   const reset = () => {
     setStartUrl('')
     setRegion('')
+    setName('')
     setStarting(false)
     setSession(null)
     setRedirectResponse('')
     setCompleting(false)
+  }
+
+  // 支持一次性粘贴 "用户名|密码|门户地址|区域" 自动拆分填充。
+  // 例：4F1GTc-user85|******|https://d-xxxx.awsapps.com/start|us-east-1
+  const handleStartUrlInput = (value: string) => {
+    if (value.includes('|')) {
+      const parts = value.split('|').map((p) => p.trim())
+      const urlIdx = parts.findIndex((p) => /awsapps\.com|^https?:\/\//i.test(p))
+      if (urlIdx >= 0) {
+        setStartUrl(parts[urlIdx])
+        // 第一段作为账号名（便于在列表里区分）
+        if (urlIdx > 0 && parts[0]) {
+          setName(parts[0])
+        }
+        // 门户地址后面一段若是区域格式（如 us-east-1）则填入区域
+        const maybeRegion = parts[urlIdx + 1]
+        if (maybeRegion && /^[a-z]{2}-[a-z]+-\d+$/i.test(maybeRegion)) {
+          setRegion(maybeRegion)
+        }
+        return
+      }
+    }
+    setStartUrl(value)
   }
 
   const handleStart = async () => {
@@ -48,6 +73,7 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
       const res = await startDeviceLogin({
         startUrl: startUrl.trim(),
         region: region.trim() || undefined,
+        name: name.trim() || undefined,
       })
       setSession(res)
     } catch (error: unknown) {
@@ -118,7 +144,23 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
                 type="text"
                 placeholder="https://d-xxxxxxxxxx.awsapps.com/start"
                 value={startUrl}
-                onChange={(e) => setStartUrl(e.target.value)}
+                onChange={(e) => handleStartUrlInput(e.target.value)}
+                disabled={starting}
+              />
+              <p className="text-xs text-muted-foreground">
+                可直接粘贴 <code>用户名|密码|门户地址|区域</code> 整行，会自动拆分填充。
+              </p>
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="accName" className="text-sm font-medium">
+                账号名称（可选）
+              </label>
+              <Input
+                id="accName"
+                type="text"
+                placeholder="如 4F1GTc-user85，方便在列表里区分"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 disabled={starting}
               />
             </div>

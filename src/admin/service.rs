@@ -254,7 +254,7 @@ impl AdminService {
         req: StartDeviceLoginRequest,
     ) -> Result<DeviceLoginStartResponse, AdminServiceError> {
         self.token_manager
-            .start_device_login(req.start_url, req.region)
+            .start_device_login(req.start_url, req.region, req.name)
             .await
             .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
     }

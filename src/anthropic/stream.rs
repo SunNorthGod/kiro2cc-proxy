@@ -545,8 +545,28 @@ impl SseStateManager {
 /// 历史上按模型分支返回 200K/1M；本变更改为统一 1M，与"contextUsage 本地化"决策一致：
 /// final_input_tokens 不再依赖 Kiro `contextUsageEvent` 反算；如需差异化窗口
 /// 可恢复 match 分支。
-pub(crate) fn context_window_for_model(_model: &str) -> i32 {
-    1_000_000
+pub(crate) fn context_window_for_model(model: &str) -> i32 {
+    if is_million_context_model(model) {
+        1_000_000
+    } else {
+        200_000
+    }
+}
+
+/// 拥有 1M 上下文窗口的模型（对齐 Kiro / Anthropic 官方）：
+/// opus 4.7 / 4.8、sonnet 4.6、sonnet 5、fable 5。
+/// 其余（opus 4.6 / 4.5、sonnet 4.5 / 4、haiku 等）为 200K。
+fn is_million_context_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("opus-4-8")
+        || m.contains("opus-4.8")
+        || m.contains("opus-4-7")
+        || m.contains("opus-4.7")
+        || m.contains("sonnet-4-6")
+        || m.contains("sonnet-4.6")
+        || m.contains("sonnet-5")
+        || m.contains("fable-5")
+        || m.contains("fable5")
 }
 
 /// 空响应判定为「上下文过大」的输入 token 阈值（取窗口的 28%）。
@@ -569,37 +589,15 @@ const NEAR_EMPTY_OUTPUT_THRESHOLD: i32 = 30;
 /// 限制上报值在安全范围内。thinking 内容不应计入对外报告的 output_tokens。
 const OUTPUT_TOKENS_REPORT_CAP: i32 = 380;
 
-/// 返回给客户端的 token 类字段缩放系数（默认）。
+/// 返回给客户端的 token 类字段：直接上报真实值，不再缩放。
 ///
-/// 仅影响给客户端（如 Claude Code）看到的 usage.input_tokens / cache_* 字段。
-/// 内部计费与 usage_tracker 入库仍写入真实值，admin/user UI 显示不受影响。
-///
-/// Claude Code 4.6 窗口 200K，83% 触发 compact = 166K。
-/// 真实 255K+ × 0.65 = 166K+ → 触发 compact。
-const CLIENT_TOKEN_DISPLAY_SCALE: f64 = 0.65;
-
-/// 4.7/4.8 模型的缩放系数（窗口 1M，需更低系数避免过早触发 compact）。
-const CLIENT_TOKEN_DISPLAY_SCALE_LARGE_WINDOW: f64 = 0.15;
-
-fn is_large_window_model(model: &str) -> bool {
-    model.contains("opus-4-7")
-        || model.contains("opus-4-8")
-        || model.contains("claude-4-7")
-        || model.contains("claude-4-8")
-        || model.contains("sonnet-5")
-}
-
-/// 对客户端展示用的 token 值缩放（向上取整保证非零）。
-pub(crate) fn scale_for_client(n: i32, model: &str) -> i32 {
-    if n <= 0 {
-        return n.max(0);
-    }
-    let scale = if is_large_window_model(model) {
-        CLIENT_TOKEN_DISPLAY_SCALE_LARGE_WINDOW
-    } else {
-        CLIENT_TOKEN_DISPLAY_SCALE
-    };
-    ((n as f64) * scale).ceil() as i32
+/// 历史上曾为兼容 Claude Code 假定的 200K 窗口而缩放 token 数（避免过早
+/// 触发自动 compact），但这会误导 opencode / api2kiro 等按真实窗口计算的
+/// 客户端（少算 → 迟 compact → 溢出风险），也让 Kiro 的上下文条不准。
+/// 现统一上报真实 token，并在 /v1/models 中为每个模型标明真实上下文窗口，
+/// 由各客户端据此判断。内部计费与 usage_tracker 入库本就是真实值，不受影响。
+pub(crate) fn scale_for_client(n: i32, _model: &str) -> i32 {
+    n.max(0)
 }
 
 fn cap_input_tokens(context_input_tokens: i32, _local_estimate: i32, model: &str) -> i32 {
@@ -1825,36 +1823,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_scale_for_client_basic() {
-        // 默认模型（非 4.7/4.8）：× 0.65
-        assert_eq!(scale_for_client(100_000, "claude-opus-4-6"), 65_000);
-        assert_eq!(scale_for_client(85_000, "claude-sonnet-4-6"), 55_250);
-        assert_eq!(scale_for_client(0, "claude-opus-4-6"), 0);
+    fn test_scale_for_client_is_identity() {
+        // 不再缩放：直接上报真实 token（负数归零）
+        assert_eq!(scale_for_client(100_000, "claude-opus-4-6"), 100_000);
+        assert_eq!(scale_for_client(100_000, "claude-opus-4-8"), 100_000);
+        assert_eq!(scale_for_client(85_000, "claude-sonnet-4-6"), 85_000);
+        assert_eq!(scale_for_client(11, "claude-opus-4-7"), 11);
         assert_eq!(scale_for_client(1, "claude-opus-4-6"), 1);
+        assert_eq!(scale_for_client(0, "claude-opus-4-6"), 0);
         assert_eq!(scale_for_client(-100, "claude-opus-4-6"), 0);
-    }
-
-    #[test]
-    fn test_scale_for_client_large_window_model() {
-        // 4.7/4.8 模型：× 0.15
-        assert_eq!(scale_for_client(100_000, "claude-opus-4-7"), 15_000);
-        assert_eq!(scale_for_client(100_000, "claude-opus-4-8"), 15_000);
-        assert_eq!(scale_for_client(200_000, "claude-opus-4-7"), 30_000);
-        assert_eq!(scale_for_client(1, "claude-opus-4-8"), 1);
-        assert_eq!(scale_for_client(0, "claude-opus-4-7"), 0);
-    }
-
-    #[test]
-    fn test_scale_for_client_non_round() {
-        // 11 × 0.65 = ceil(7.15) = 8
-        assert_eq!(scale_for_client(11, "claude-opus-4-6"), 8);
-        // 11 × 0.15 = ceil(1.65) = 2
-        assert_eq!(scale_for_client(11, "claude-opus-4-7"), 2);
-        // i32::MAX 不溢出
-        let r = scale_for_client(i32::MAX, "claude-opus-4-6");
-        assert!(r > 0 && r < i32::MAX);
-        let r2 = scale_for_client(i32::MAX, "claude-opus-4-8");
-        assert!(r2 > 0 && r2 < i32::MAX);
+        assert_eq!(scale_for_client(i32::MAX, "claude-opus-4-8"), i32::MAX);
     }
 
     #[test]
@@ -2741,18 +2719,18 @@ mod tests {
 
     #[test]
     fn test_empty_response_oversized_context_by_threshold() {
-        // contextUsage 本地化后所有模型按 1M 窗口，阈值 = 1M * 0.28 = 280_000
-        // 大输入(>=28万)的空响应 → 判定为上下文过大
-        let big = StreamContext::new_with_thinking("test-model", 300_000, true);
+        // "test-model" 为非 1M 模型 → 窗口 200K，阈值 = 200K * 0.28 = 56_000
+        // 大输入(>=5.6万)的空响应 → 判定为上下文过大
+        let big = StreamContext::new_with_thinking("test-model", 120_000, true);
         assert!(
             big.empty_response_is_oversized_context(),
-            "input 30万应判定为上下文过大"
+            "input 12万应判定为上下文过大"
         );
         // 小输入的空响应 → 视为偶发，可重试
-        let small = StreamContext::new_with_thinking("test-model", 100_000, true);
+        let small = StreamContext::new_with_thinking("test-model", 20_000, true);
         assert!(
             !small.empty_response_is_oversized_context(),
-            "input 10万不应判定为上下文过大"
+            "input 2万不应判定为上下文过大"
         );
     }
 
@@ -2818,12 +2796,10 @@ mod tests {
     }
 
     #[test]
-    fn test_context_window_opus_4_6_is_1m() {
-        assert_eq!(context_window_for_model("claude-opus-4-6"), 1_000_000);
-        assert_eq!(
-            context_window_for_model("claude-opus-4-6-thinking"),
-            1_000_000
-        );
+    fn test_context_window_opus_4_6_is_200k() {
+        // 对齐 Kiro 官方：Opus 4.6 为 200K（非 1M）
+        assert_eq!(context_window_for_model("claude-opus-4-6"), 200_000);
+        assert_eq!(context_window_for_model("claude-opus-4-6-thinking"), 200_000);
     }
 
     #[test]
@@ -2836,14 +2812,12 @@ mod tests {
     }
 
     #[test]
-    fn test_context_window_all_models_unified_to_1m() {
-        // contextUsage 本地化后所有模型统一返回 1M
-        assert_eq!(
-            context_window_for_model("claude-haiku-4-5-20251001"),
-            1_000_000
-        );
-        assert_eq!(context_window_for_model("unknown-model"), 1_000_000);
-        assert_eq!(context_window_for_model(""), 1_000_000);
+    fn test_context_window_non_1m_models_are_200k() {
+        // 非 1M 模型（haiku / sonnet 4.5 / 未知）为 200K
+        assert_eq!(context_window_for_model("claude-haiku-4-5-20251001"), 200_000);
+        assert_eq!(context_window_for_model("claude-sonnet-4-5"), 200_000);
+        assert_eq!(context_window_for_model("unknown-model"), 200_000);
+        assert_eq!(context_window_for_model(""), 200_000);
     }
 
     #[test]

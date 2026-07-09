@@ -901,6 +901,8 @@ struct DeviceLoginSession {
     state: String,
     region: String,
     start_url: String,
+    /// 用户提供的账号名称 / 备注（用于登录成功后标记账号）
+    name: Option<String>,
     created_at: Instant,
     expires_in: i64,
 }
@@ -2479,7 +2481,11 @@ impl MultiTokenManager {
         &self,
         start_url: String,
         region: Option<String>,
+        name: Option<String>,
     ) -> anyhow::Result<crate::admin::types::DeviceLoginStartResponse> {
+        let name = name
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
         let start_url = start_url.trim().to_string();
         if start_url.is_empty() {
             anyhow::bail!("startUrl 不能为空");
@@ -2528,6 +2534,7 @@ impl MultiTokenManager {
                     state,
                     region,
                     start_url: start_url.clone(),
+                    name,
                     created_at: Instant::now(),
                     expires_in,
                 },
@@ -2555,7 +2562,7 @@ impl MultiTokenManager {
             message: Some(m),
         };
 
-        let (client_id, client_secret, code_verifier, expected_state, region, start_url) = {
+        let (client_id, client_secret, code_verifier, expected_state, region, start_url, name) = {
             let sessions = self.device_login_sessions.lock();
             match sessions.get(session_id) {
                 Some(s) => (
@@ -2565,6 +2572,7 @@ impl MultiTokenManager {
                     s.state.clone(),
                     s.region.clone(),
                     s.start_url.clone(),
+                    s.name.clone(),
                 ),
                 None => anyhow::bail!("登录会话不存在或已过期"),
             }
@@ -2604,14 +2612,20 @@ impl MultiTokenManager {
             Err(e) => return Ok(err(format!("换取 token 失败：{}", e))),
         };
 
+        // 账号标签：优先用用户填写的名称（如 "4F1GTc-user85"，便于区分），
+        // 否则用门户地址派生的名称，避免展示“账号 #N”。
+        let label = name
+            .clone()
+            .or_else(|| nickname_from_start_url(&start_url));
         let new_cred = KiroCredentials {
             refresh_token: Some(refresh_token),
             client_id: Some(client_id),
             client_secret: Some(client_secret),
             auth_method: Some("idc".to_string()),
             region: Some(region),
-            // 用门户地址派生一个可读名称，避免展示“账号 #N”
-            nickname: nickname_from_start_url(&start_url),
+            // email 作为列表主展示名；nickname 作为兜底名称。两者都用用户提供的标签。
+            email: label.clone(),
+            nickname: label,
             ..Default::default()
         };
         let credential_id = self.add_credential(new_cred).await?;

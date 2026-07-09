@@ -50,6 +50,10 @@ pub struct Model {
     #[serde(rename = "type")]
     pub model_type: String,
     pub max_tokens: i32,
+    /// 上下文窗口（输入 token 上限）。客户端据此计算上下文占用。
+    pub context_window: i32,
+    /// 模型描述（对齐 Kiro 官方列表文案）。
+    pub description: String,
 }
 
 /// 模型列表响应

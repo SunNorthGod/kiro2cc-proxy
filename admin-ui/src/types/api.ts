@@ -265,6 +265,8 @@ export interface FailureLogsResponse {
 export interface StartDeviceLoginRequest {
   startUrl: string
   region?: string
+  /** 账号名称/备注（可选），用于在列表中区分账号 */
+  name?: string
 }
 
 export interface DeviceLoginStartResponse {

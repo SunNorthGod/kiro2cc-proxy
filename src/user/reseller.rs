@@ -30,6 +30,10 @@ pub struct SubKeyView {
     pub expires_at: Option<String>,
     pub duration_days: Option<f64>,
     pub activated_at: Option<String>,
+    /// 计算后的状态：active / pending / expired / disabled。
+    /// 只有"懒激活且未使用"（duration 有值且未激活）才算 pending，
+    /// 固定到期或永久子卡密创建后即为 active（此前会因 activated_at 为空被误显示为未激活）。
+    pub status: String,
 }
 
 /// 分销商概览响应
@@ -87,6 +91,7 @@ pub async fn overview(
             expires_at: c.expires_at.map(|t| t.to_rfc3339()),
             duration_days: c.duration_days,
             activated_at: c.activated_at.map(|t| t.to_rfc3339()),
+            status: sub_key_status(c),
         })
         .collect();
 
@@ -242,6 +247,25 @@ pub async fn delete_sub_key(
 struct SuccessBody {
     success: bool,
     message: String,
+}
+
+/// 计算子卡密的展示状态。
+///
+/// 关键修复：`is_active()` 要求 `activated_at` 非空，而只有"懒激活"（设了
+/// duration_days）的卡密在首次使用时才会写入 activated_at。固定到期（继承自
+/// 父卡密）或永久子卡密的 activated_at 永远为 None，导致之前一直显示"未激活"，
+/// 尽管它们创建后即可用。这里按真实可用性计算状态。
+fn sub_key_status(k: &crate::model::api_key::ApiKey) -> String {
+    if !k.enabled {
+        "disabled".to_string()
+    } else if k.is_expired() {
+        "expired".to_string()
+    } else if k.duration_days.is_some() && k.activated_at.is_none() {
+        // 懒激活且尚未首次使用
+        "pending".to_string()
+    } else {
+        "active".to_string()
+    }
 }
 
 /// 构造错误响应

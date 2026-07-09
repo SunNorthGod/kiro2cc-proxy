@@ -279,7 +279,13 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
                           <div className="mt-2 space-y-1">
                             <div className="flex justify-between text-xs text-muted-foreground">
                               <span>已用 {formatCredits(used)} / {limit > 0 ? formatCredits(limit) : '∞'} credits</span>
-                              <span>{k.activatedAt ? '已激活' : '待激活'}</span>
+                              <span>{
+                                k.status === 'active' ? '使用中'
+                                : k.status === 'pending' ? '待激活'
+                                : k.status === 'expired' ? '已过期'
+                                : k.status === 'disabled' ? '已禁用'
+                                : (k.activatedAt ? '使用中' : '待激活')
+                              }</span>
                             </div>
                             {limit > 0 && <Progress value={pct} />}
                           </div>
