@@ -208,17 +208,20 @@ fn mk_model(
 
 /// 对外暴露的模型列表，完全对齐 Kiro 官方模型选择器（名称/描述/上下文窗口）。
 /// 每个模型的 credit 倍率由 Kiro 客户端根据模型 ID 自行显示，此处不需要携带。
-/// 1M 上下文：Opus 4.8 / 4.7、Sonnet 4.6；其余为 200K（对齐官方文案）。
+/// 上下文窗口对齐 Kiro 官方后端 ListAvailableModels：1M = auto / Opus 4.8·4.7·4.6 / Sonnet 4.6；
+/// 200K = Opus 4.5 / Sonnet 4.5·4 / Haiku；MiniMax=196K；Qwen3-Coder-Next=256K。
 fn build_model_list() -> Vec<Model> {
     const M1: i32 = 1_000_000;
     const K200: i32 = 200_000;
+    const K256: i32 = 256_000;
+    const K196: i32 = 196_000;
     vec![
         mk_model(
             "auto",
             "Auto",
             "Models chosen by task for optimal usage and consistent quality",
             32000,
-            K200,
+            M1,
             "kiro",
         ),
         mk_model(
@@ -240,9 +243,9 @@ fn build_model_list() -> Vec<Model> {
         mk_model(
             "claude-opus-4-6",
             "Claude Opus 4.6",
-            "Claude Opus 4.6 model",
+            "Claude Opus 4.6 model with 1M context window",
             128000,
-            K200,
+            M1,
             "anthropic",
         ),
         mk_model(
@@ -290,7 +293,7 @@ fn build_model_list() -> Vec<Model> {
             "MiniMax M2.5",
             "MiniMax M2.5 model",
             32000,
-            K200,
+            K196,
             "minimax",
         ),
         mk_model(
@@ -298,7 +301,7 @@ fn build_model_list() -> Vec<Model> {
             "MiniMax M2.1",
             "Experimental preview of MiniMax M2.1",
             32000,
-            K200,
+            K196,
             "minimax",
         ),
         mk_model(
@@ -306,7 +309,7 @@ fn build_model_list() -> Vec<Model> {
             "Qwen3 Coder Next",
             "Experimental preview of Qwen3 Coder Next",
             32000,
-            K200,
+            K256,
             "qwen",
         ),
     ]
@@ -1590,16 +1593,20 @@ mod tests {
 
     #[test]
     fn test_context_windows_aligned_to_official() {
-        // 1M 窗口：Opus 4.8 / 4.7、Sonnet 4.6
+        // 1M 窗口（对齐 Kiro 官方 ListAvailableModels）：auto、Opus 4.8 / 4.7 / 4.6、Sonnet 4.6
+        assert_eq!(find_by_id("auto").unwrap().context_window, 1_000_000);
         assert_eq!(find_by_id("claude-opus-4-8").unwrap().context_window, 1_000_000);
         assert_eq!(find_by_id("claude-opus-4-7").unwrap().context_window, 1_000_000);
+        assert_eq!(find_by_id("claude-opus-4-6").unwrap().context_window, 1_000_000);
         assert_eq!(find_by_id("claude-sonnet-4-6").unwrap().context_window, 1_000_000);
-        // 200K 窗口：Opus 4.6 / 4.5、Sonnet 4.5 / 4、Haiku
-        assert_eq!(find_by_id("claude-opus-4-6").unwrap().context_window, 200_000);
+        // 200K 窗口：Opus 4.5、Sonnet 4.5 / 4、Haiku
         assert_eq!(find_by_id("claude-opus-4-5").unwrap().context_window, 200_000);
         assert_eq!(find_by_id("claude-sonnet-4-5").unwrap().context_window, 200_000);
         assert_eq!(find_by_id("claude-sonnet-4").unwrap().context_window, 200_000);
         assert_eq!(find_by_id("claude-haiku-4-6").unwrap().context_window, 200_000);
+        // 特殊窗口
+        assert_eq!(find_by_id("qwen3-coder-next").unwrap().context_window, 256_000);
+        assert_eq!(find_by_id("minimax-m2.5").unwrap().context_window, 196_000);
     }
 
     #[test]
@@ -1614,7 +1621,7 @@ mod tests {
         );
         assert_eq!(
             find_by_id("claude-opus-4-6").unwrap().description,
-            "Claude Opus 4.6 model"
+            "Claude Opus 4.6 model with 1M context window"
         );
     }
 

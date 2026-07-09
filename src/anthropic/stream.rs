@@ -540,11 +540,8 @@ impl SseStateManager {
     }
 }
 
-/// 所有模型统一按 100 万 token 上下文窗口计算。
-///
-/// 历史上按模型分支返回 200K/1M；本变更改为统一 1M，与"contextUsage 本地化"决策一致：
-/// final_input_tokens 不再依赖 Kiro `contextUsageEvent` 反算；如需差异化窗口
-/// 可恢复 match 分支。
+/// 模型上下文窗口（用于 cap_input_tokens 与空响应阈值），对齐 Kiro 官方 ListAvailableModels：
+/// 1M 模型返回 1_000_000，其余返回 200_000。
 pub(crate) fn context_window_for_model(model: &str) -> i32 {
     if is_million_context_model(model) {
         1_000_000
@@ -553,15 +550,18 @@ pub(crate) fn context_window_for_model(model: &str) -> i32 {
     }
 }
 
-/// 拥有 1M 上下文窗口的模型（对齐 Kiro / Anthropic 官方）：
-/// opus 4.7 / 4.8、sonnet 4.6、sonnet 5、fable 5。
-/// 其余（opus 4.6 / 4.5、sonnet 4.5 / 4、haiku 等）为 200K。
+/// 拥有 1M 上下文窗口的模型（对齐 Kiro 官方 ListAvailableModels）：
+/// auto、opus 4.8 / 4.7 / 4.6、sonnet 4.6 / 5、fable 5。
+/// 其余（opus 4.5、sonnet 4.5 / 4、haiku 等）为 200K。
 fn is_million_context_model(model: &str) -> bool {
     let m = model.to_lowercase();
-    m.contains("opus-4-8")
+    m == "auto"
+        || m.contains("opus-4-8")
         || m.contains("opus-4.8")
         || m.contains("opus-4-7")
         || m.contains("opus-4.7")
+        || m.contains("opus-4-6")
+        || m.contains("opus-4.6")
         || m.contains("sonnet-4-6")
         || m.contains("sonnet-4.6")
         || m.contains("sonnet-5")
@@ -2796,10 +2796,11 @@ mod tests {
     }
 
     #[test]
-    fn test_context_window_opus_4_6_is_200k() {
-        // 对齐 Kiro 官方：Opus 4.6 为 200K（非 1M）
-        assert_eq!(context_window_for_model("claude-opus-4-6"), 200_000);
-        assert_eq!(context_window_for_model("claude-opus-4-6-thinking"), 200_000);
+    fn test_context_window_opus_4_6_and_auto_are_1m() {
+        // 对齐 Kiro 官方 ListAvailableModels：Opus 4.6 与 auto 均为 1M
+        assert_eq!(context_window_for_model("claude-opus-4-6"), 1_000_000);
+        assert_eq!(context_window_for_model("claude-opus-4-6-thinking"), 1_000_000);
+        assert_eq!(context_window_for_model("auto"), 1_000_000);
     }
 
     #[test]
