@@ -162,6 +162,7 @@ pub struct LoginResponse {
     pub duration_days: Option<f64>,
     pub activated_at: Option<String>,
     /// 是否可管理子卡密（前端据此显示"子卡密管理"面板）
+    #[serde(rename = "canManageSubKeys")]
     pub can_manage_subkeys: bool,
     /// 可再分配额度（仅可管理子卡密的卡有值）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -185,6 +186,7 @@ pub struct UsageResponse {
     pub total_credits: f64,
     pub by_model: Vec<crate::model::usage::ModelUsage>,
     /// 是否可管理子卡密
+    #[serde(rename = "canManageSubKeys")]
     pub can_manage_subkeys: bool,
     /// 可再分配额度（仅可管理子卡密的卡有值）
     #[serde(skip_serializing_if = "Option::is_none")]
