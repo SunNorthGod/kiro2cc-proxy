@@ -8,7 +8,8 @@ use axum::{
 
 use super::{
     handlers::{get_usage, get_usage_records, login},
-    middleware::{UserState, user_auth_middleware},
+    middleware::{UserState, reseller_auth_middleware, user_auth_middleware},
+    reseller::{create_sub_key, delete_sub_key, overview, topup_sub_key, update_sub_key},
 };
 
 /// 创建 User API 路由
@@ -26,7 +27,22 @@ pub fn create_user_router(state: UserState) -> Router {
             state.clone(),
             user_auth_middleware,
         ))
+        .with_state(state.clone());
+
+    // 分销商管理：需要分销卡密鉴权
+    let reseller = Router::new()
+        .route("/reseller/overview", get(overview))
+        .route("/reseller/sub-keys", post(create_sub_key))
+        .route(
+            "/reseller/sub-keys/{id}",
+            axum::routing::put(update_sub_key).delete(delete_sub_key),
+        )
+        .route("/reseller/sub-keys/{id}/topup", post(topup_sub_key))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            reseller_auth_middleware,
+        ))
         .with_state(state);
 
-    public.merge(protected)
+    public.merge(protected).merge(reseller)
 }

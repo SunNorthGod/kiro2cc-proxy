@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   LogOut, RefreshCw, Activity, Zap, Coins, Clock,
-  ArrowUpFromLine, ArrowDownToLine, FileText,
+  ArrowUpFromLine, ArrowDownToLine, FileText, Users,
 } from 'lucide-react'
 import { getUsage } from '@/api/user'
 import { storage } from '@/lib/storage'
@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { UsageLogPage } from '@/components/usage-log-page'
+import { ResellerPanel } from '@/components/reseller-panel'
 
 interface DashboardProps {
   onLogout: () => void
@@ -19,6 +20,7 @@ interface DashboardProps {
 
 export function Dashboard({ onLogout }: DashboardProps) {
   const [showLog, setShowLog] = useState(false)
+  const [showReseller, setShowReseller] = useState(false)
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['usage'],
     queryFn: getUsage,
@@ -71,6 +73,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
     return <UsageLogPage onBack={() => setShowLog(false)} />
   }
 
+  if (showReseller) {
+    return <ResellerPanel onBack={() => setShowReseller(false)} />
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
@@ -81,6 +87,16 @@ export function Dashboard({ onLogout }: DashboardProps) {
             {getStatusBadge()}
           </div>
           <div className="flex items-center gap-2">
+            {data?.isReseller && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowReseller(true)}
+              >
+                <Users className="h-4 w-4 mr-1" />
+                子卡密管理
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"

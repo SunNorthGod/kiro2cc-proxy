@@ -32,6 +32,12 @@ pub struct UserContext {
     pub credit_limit: Option<f64>,
 }
 
+/// 分销商认证上下文（注入到请求 extensions）
+#[derive(Clone)]
+pub struct ResellerContext {
+    pub reseller_id: u32,
+}
+
 /// 错误响应
 #[derive(Serialize)]
 pub struct UserErrorResponse {
@@ -84,6 +90,67 @@ pub async fn user_auth_middleware(
             StatusCode::FORBIDDEN,
             axum::Json(UserErrorResponse {
                 error: "API Key 已过期".into(),
+            }),
+        )
+            .into_response(),
+        ApiKeyAuthResult::NotFound => (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(UserErrorResponse {
+                error: "无效的 API Key".into(),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+/// 分销商 API 认证中间件
+/// 完整校验（启用 + 未过期），并要求该 key 为分销卡密，注入 ResellerContext。
+pub async fn reseller_auth_middleware(
+    State(state): State<UserState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let api_key = auth::extract_api_key(&request);
+
+    let Some(key) = api_key else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(UserErrorResponse {
+                error: "缺少 API Key".into(),
+            }),
+        )
+            .into_response();
+    };
+
+    match state.api_key_manager.authenticate(&key) {
+        ApiKeyAuthResult::Valid {
+            id, is_reseller, ..
+        } => {
+            if !is_reseller {
+                return (
+                    StatusCode::FORBIDDEN,
+                    axum::Json(UserErrorResponse {
+                        error: "该 API Key 不是分销卡密".into(),
+                    }),
+                )
+                    .into_response();
+            }
+            request
+                .extensions_mut()
+                .insert(ResellerContext { reseller_id: id });
+            next.run(request).await
+        }
+        ApiKeyAuthResult::Disabled => (
+            StatusCode::FORBIDDEN,
+            axum::Json(UserErrorResponse {
+                error: "分销卡密已被禁用".into(),
+            }),
+        )
+            .into_response(),
+        ApiKeyAuthResult::Expired => (
+            StatusCode::FORBIDDEN,
+            axum::Json(UserErrorResponse {
+                error: "分销卡密已过期".into(),
             }),
         )
             .into_response(),

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 import { useState, useRef, useEffect } from 'react'
-import { Copy, Plus, Pencil, Trash2, Key, Check, Clock, BarChart3, RotateCcw, Coins, ArrowDownWideNarrow, Search, Loader2, Link2, Globe, ChevronDown, X, FileText } from 'lucide-react'
+import { Copy, Plus, Pencil, Trash2, Key, Check, Clock, BarChart3, RotateCcw, Coins, ArrowDownWideNarrow, Search, Loader2, Link2, Globe, ChevronDown, X, FileText, Store } from 'lucide-react'
 import { toast } from 'sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dialog'
 import { useQueryClient } from '@tanstack/react-query'
 import { useApiKeys, useCreateApiKey, useUpdateApiKey, useDeleteApiKey, useTopUpApiKey, useServerInfo, useAllUsage, useResetKeyUsage, useRpm, useCredentials, useCredentialBalances } from '@/hooks/use-credentials'
-import { deleteApiKey as deleteApiKeyApi } from '@/api/credentials'
+import { deleteApiKey as deleteApiKeyApi, setApiKeyReseller } from '@/api/credentials'
 import { extractErrorMessage } from '@/lib/utils'
 import type { ApiKeyItem, UsageSummary } from '@/types/api'
 
@@ -277,11 +277,28 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
   }
 
   const handleDelete = (key: ApiKeyItem) => {
-    if (!confirm(`确定要删除 "${key.name}" 的 API Key 吗？`)) return
+    if (key.isReseller) {
+      if (!confirm(`「${key.name}」是分销卡密，删除会级联删除它名下的所有子卡密，确定吗？`)) return
+    } else if (!confirm(`确定要删除 "${key.name}" 的 API Key 吗？`)) return
     deleteKey(key.id, {
       onSuccess: () => toast.success('已删除'),
       onError: (err) => toast.error(extractErrorMessage(err)),
     })
+  }
+
+  const handleToggleReseller = (key: ApiKeyItem) => {
+    const makeReseller = !key.isReseller
+    if (makeReseller && key.creditLimit == null) {
+      toast.error('只有「按额度」的卡密才能设为分销卡密，请先给它设置额度预算')
+      return
+    }
+    if (makeReseller && !confirm(`将「${key.name}」设为分销卡密？它将只能用于开子卡密，不能再直接用于对话。`)) return
+    setApiKeyReseller(key.id, makeReseller)
+      .then(() => {
+        toast.success(makeReseller ? '已设为分销卡密' : '已取消分销卡密')
+        queryClient.invalidateQueries({ queryKey: ['apiKeys'] })
+      })
+      .catch((err) => toast.error(extractErrorMessage(err)))
   }
 
   const openEdit = (key: ApiKeyItem) => {
@@ -526,6 +543,12 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
                         <Badge variant={status === 'active' ? 'success' : status === 'pending' ? 'secondary' : status === 'expired' ? 'warning' : 'destructive'}>
                           {status === 'active' ? '启用' : status === 'pending' ? '待激活' : status === 'expired' ? '已过期' : '已禁用'}
                         </Badge>
+                        {apiKey.isReseller && (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-700 px-2 py-0.5 text-xs font-medium">
+                            <Store className="h-3 w-3 shrink-0" />
+                            分销
+                          </span>
+                        )}
                         {isBound && apiKey.boundCredentialIds && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-700 px-2 py-0.5 text-xs font-medium">
                             <Link2 className="h-3 w-3 shrink-0" />
@@ -617,6 +640,17 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
                     {(apiKey.creditLimit != null || apiKey.durationDays != null || apiKey.expiresAt != null) && (
                       <Button variant="ghost" size="sm" onClick={() => openTopUp(apiKey)} title={apiKey.creditLimit != null ? '加额度' : '加时长'}>
                         {apiKey.creditLimit != null ? <Coins className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
+                      </Button>
+                    )}
+                    {(apiKey.creditLimit != null || apiKey.isReseller) && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleToggleReseller(apiKey)}
+                        title={apiKey.isReseller ? '取消分销' : '设为分销卡密'}
+                        className={apiKey.isReseller ? 'text-amber-600 hover:text-amber-600' : ''}
+                      >
+                        <Store className="h-4 w-4" />
                       </Button>
                     )}
                     <Button variant="ghost" size="sm" onClick={() => openEdit(apiKey)} title="编辑">

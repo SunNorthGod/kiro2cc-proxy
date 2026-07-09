@@ -181,6 +181,12 @@ export async function topUpApiKey(
   return data
 }
 
+// 设置/取消分销卡密身份
+export async function setApiKeyReseller(id: number, isReseller: boolean): Promise<ApiKeyItem> {
+  const { data } = await api.post<ApiKeyItem>(`/api-keys/${id}/reseller`, { isReseller })
+  return data
+}
+
 // ============ API Key 用量 ============
 
 // 获取所有 API Key 用量概览

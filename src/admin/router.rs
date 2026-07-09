@@ -11,7 +11,7 @@ use super::{
         create_api_key, delete_api_key, get_all_usage, get_credential_today_summary,
         get_credential_usage_records, get_daily_usage, get_daily_usage_records, get_failure_logs,
         get_key_usage, get_key_usage_records, get_rpm, get_server_info, get_throttle_logs,
-        list_api_keys, reset_key_usage, top_up_api_key, update_api_key,
+        list_api_keys, reset_key_usage, set_api_key_reseller, top_up_api_key, update_api_key,
     },
     handlers::{
         add_credential, delete_credential, get_all_credentials, get_auth_keys,
@@ -61,6 +61,7 @@ pub fn create_admin_router(state: AdminState) -> Router {
         .route("/api-keys/usage", get(get_all_usage))
         .route("/api-keys/{id}", put(update_api_key).delete(delete_api_key))
         .route("/api-keys/{id}/topup", post(top_up_api_key))
+        .route("/api-keys/{id}/reseller", post(set_api_key_reseller))
         .route(
             "/api-keys/{id}/usage",
             get(get_key_usage).delete(reset_key_usage),

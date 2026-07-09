@@ -135,8 +135,23 @@ pub async fn auth_middleware(
                 name,
                 credit_limit,
                 bound_credential_ids,
+                is_reseller,
                 ..
             } => {
+                // 分销卡密是管理凭据，禁止直接用于推理请求
+                if is_reseller {
+                    tracing::warn!(
+                        api_key_id = id,
+                        api_key_name = %name,
+                        "分销卡密尝试用于推理请求，已拒绝"
+                    );
+                    let error = ErrorResponse::new(
+                        "forbidden",
+                        "This is a reseller key for sub-key management only and cannot be used for inference. Please use a sub-key issued under it.",
+                    );
+                    return (StatusCode::FORBIDDEN, Json(error)).into_response();
+                }
+
                 // 懒激活：首次使用时激活 key
                 if let Err(e) = manager.activate_key(id) {
                     tracing::warn!(api_key_id = id, error = %e, "激活 API Key 失败");

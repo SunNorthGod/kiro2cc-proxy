@@ -122,6 +122,12 @@ export interface ApiKeyItem {
   durationDays: number | null
   activatedAt: string | null
   boundCredentialIds?: number[]
+  /** 是否为分销卡密 */
+  isReseller?: boolean
+  /** 父分销卡密 ID（仅子卡密有值） */
+  parentKeyId?: number | null
+  /** 已结算额度（仅分销卡密） */
+  committedCredits?: number
 }
 
 export interface CreateApiKeyRequest {

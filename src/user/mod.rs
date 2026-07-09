@@ -9,6 +9,7 @@
 
 mod handlers;
 mod middleware;
+mod reseller;
 mod router;
 
 pub use middleware::UserState;
