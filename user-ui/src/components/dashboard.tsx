@@ -204,7 +204,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-sm font-medium">{formatCredits(m.cost / 0.72)}</div>
+                      <div className="text-sm font-medium">{formatCredits(m.credits)}</div>
                       <div className="text-xs text-muted-foreground mt-0.5">
                         {formatTokens(m.inputTokens)} in / {formatTokens(m.outputTokens)} out
                       </div>

@@ -543,6 +543,43 @@ async fn register_client(
     Ok((data.client_id, data.client_secret))
 }
 
+/// 候选 IdC 区域（按常见程度排序）。RegisterClient 带 issuerUrl 时，只有门户真正
+/// 所属的区域会返回 200，其余区域返回 400，可据此自动探测门户所属区域。
+const IDC_CANDIDATE_REGIONS: [&str; 8] = [
+    "us-east-1",
+    "us-west-2",
+    "eu-central-1",
+    "eu-west-1",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-northeast-1",
+    "eu-west-2",
+];
+
+/// 自动探测门户所属区域并完成 OIDC 客户端注册，返回 (region, clientId, clientSecret)。
+/// 逐个候选区域试注册，第一个成功的即为门户区域（us-east-1 最常见，通常一次命中）。
+async fn detect_region_and_register(
+    config: &Config,
+    start_url: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<(String, String, String)> {
+    let mut last_err = String::new();
+    for region in IDC_CANDIDATE_REGIONS {
+        match register_client(config, region, start_url, proxy).await {
+            Ok((cid, csec)) => {
+                tracing::info!("自动探测到门户 {} 所属区域: {}", start_url, region);
+                return Ok((region.to_string(), cid, csec));
+            }
+            Err(e) => last_err = e.to_string(),
+        }
+    }
+    anyhow::bail!(
+        "无法自动探测该门户所属区域（已尝试 {} 个常见区域）；请手动指定 region 再试。最后错误：{}",
+        IDC_CANDIDATE_REGIONS.len(),
+        last_err
+    )
+}
+
 /// 生成 PKCE 的 (code_verifier, code_challenge)。challenge = base64url(sha256(verifier))，无 padding。
 fn generate_pkce() -> (String, String) {
     use base64::Engine;
@@ -2442,14 +2479,29 @@ impl MultiTokenManager {
         if start_url.is_empty() {
             anyhow::bail!("startUrl 不能为空");
         }
-        let region = region
+        // 用户显式指定的区域（留空或 "auto" 表示自动探测）
+        let explicit_region = region
             .map(|r| r.trim().to_string())
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| self.config.effective_auth_region().to_string());
+            .filter(|r| !r.is_empty() && r != "auto");
 
         let proxy = self.proxy.clone();
-        let (client_id, client_secret) =
-            register_client(&self.config, &region, &start_url, proxy.as_ref()).await?;
+        // 注册 OIDC 客户端。带 issuerUrl 时只有门户真正所属的区域会返回 200，
+        // 因此可用「逐区域试注册」自动探测区域，避免用户填错（如把 us 门户填成 eu 导致 400）。
+        let (region, client_id, client_secret) = match explicit_region {
+            Some(r) => {
+                let (cid, csec) = register_client(&self.config, &r, &start_url, proxy.as_ref())
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "在区域 {} 注册失败（该门户可能不属于此区域，Kiro 账号通常是 us-east-1）：{}",
+                            r,
+                            e
+                        )
+                    })?;
+                (r, cid, csec)
+            }
+            None => detect_region_and_register(&self.config, &start_url, proxy.as_ref()).await?,
+        };
         let (code_verifier, code_challenge) = generate_pkce();
         let state = uuid::Uuid::new_v4().to_string();
         let authorize_url = build_authorize_url(&region, &client_id, &state, &code_challenge);

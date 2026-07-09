@@ -84,6 +84,10 @@ pub struct ModelUsage {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cost: f64,
+    /// 真实 credits 消耗（credits_used，缺失则按 estimated_cost*k_ref 估算）——
+    /// 前端直接展示此字段，勿再用 cost 自行换算（如旧的 cost/0.72）。
+    #[serde(default)]
+    pub credits: f64,
 }
 /// 模型定价（每百万 tokens，美元）
 /// 使用 200K context 标准定价
@@ -322,13 +326,16 @@ impl UsageTracker {
             .filter(|r| r.api_key_id == api_key_id)
             .collect();
 
-        let mut by_model: HashMap<String, (u64, i64, i64, f64)> = HashMap::new();
+        let mut by_model: HashMap<String, (u64, i64, i64, f64, f64)> = HashMap::new();
         for r in &filtered {
             let entry = by_model.entry(r.model.clone()).or_default();
             entry.0 += 1;
             entry.1 += r.input_tokens as i64;
             entry.2 += r.output_tokens as i64;
             entry.3 += r.estimated_cost;
+            entry.4 += r
+                .credits_used
+                .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model));
         }
 
         let total_credits_saved: f64 = filtered
@@ -357,12 +364,13 @@ impl UsageTracker {
             total_credits_saved,
             by_model: by_model
                 .into_iter()
-                .map(|(model, (requests, input, output, cost))| ModelUsage {
+                .map(|(model, (requests, input, output, cost, credits))| ModelUsage {
                     model,
                     requests,
                     input_tokens: input,
                     output_tokens: output,
                     cost,
+                    credits,
                 })
                 .collect(),
         }
@@ -475,7 +483,11 @@ impl UsageTracker {
                 let credits_saved = r
                     .credits_used
                     .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu);
+                let credits = r
+                    .credits_used
+                    .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model));
                 UsageRecordItem {
+                    credits,
                     model: r.model,
                     input_tokens: r.input_tokens,
                     output_tokens: r.output_tokens,
@@ -521,6 +533,9 @@ pub struct UsageRecordItem {
     pub input_tokens: i32,
     pub output_tokens: i32,
     pub estimated_cost: f64,
+    /// 计费用 credits（credits_used，缺失则按 estimated_cost*k_ref 估算）——
+    /// 前端直接展示此字段，勿再自行换算（如旧的 estimatedCost/0.72）。
+    pub credits: f64,
     /// 真实 credits 消耗（来自 meteringEvent，None 表示旧数据）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credits_used: Option<f64>,
@@ -603,7 +618,11 @@ impl UsageTracker {
                 let credits_saved = r
                     .credits_used
                     .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu);
+                let credits = r
+                    .credits_used
+                    .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model));
                 UsageRecordItem {
+                    credits,
                     model: r.model,
                     input_tokens: r.input_tokens,
                     output_tokens: r.output_tokens,
@@ -808,7 +827,11 @@ impl UsageTracker {
                 let credits_saved = r
                     .credits_used
                     .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu);
+                let credits = r
+                    .credits_used
+                    .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model));
                 UsageRecordItem {
+                    credits,
                     model: r.model,
                     input_tokens: r.input_tokens,
                     output_tokens: r.output_tokens,

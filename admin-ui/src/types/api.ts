@@ -161,6 +161,8 @@ export interface ModelUsage {
   inputTokens: number
   outputTokens: number
   cost: number
+  /** 真实 credits 消耗（后端已按 credits_used / k_ref 计算，直接展示） */
+  credits: number
 }
 
 // RPM 实时监控
@@ -176,6 +178,8 @@ export interface UsageRecord {
   inputTokens: number
   outputTokens: number
   estimatedCost: number
+  /** 计费用 credits（后端已计算，直接展示） */
+  credits: number
   creditsUsed?: number
   creditsSaved?: number
   cacheReadInputTokens?: number

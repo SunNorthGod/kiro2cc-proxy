@@ -23,7 +23,7 @@ interface DeviceLoginDialogProps {
 export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps) {
   const queryClient = useQueryClient()
   const [startUrl, setStartUrl] = useState('')
-  const [region, setRegion] = useState('us-east-1')
+  const [region, setRegion] = useState('')
   const [starting, setStarting] = useState(false)
   const [session, setSession] = useState<DeviceLoginStartResponse | null>(null)
   const [redirectResponse, setRedirectResponse] = useState('')
@@ -31,7 +31,7 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
 
   const reset = () => {
     setStartUrl('')
-    setRegion('us-east-1')
+    setRegion('')
     setStarting(false)
     setSession(null)
     setRedirectResponse('')
@@ -124,18 +124,18 @@ export function DeviceLoginDialog({ open, onOpenChange }: DeviceLoginDialogProps
             </div>
             <div className="space-y-2">
               <label htmlFor="region" className="text-sm font-medium">
-                Region
+                Region（可选）
               </label>
               <Input
                 id="region"
                 type="text"
-                placeholder="us-east-1"
+                placeholder="留空自动探测"
                 value={region}
                 onChange={(e) => setRegion(e.target.value)}
                 disabled={starting}
               />
               <p className="text-xs text-muted-foreground">
-                区域要和该账号所属区域一致（如 us-east-1、eu-central-1），否则会找不到 profile。
+                留空即可自动探测门户所属区域（Kiro 账号通常是 us-east-1）。只有确有需要时才手动填写。
               </p>
             </div>
             <DialogFooter>

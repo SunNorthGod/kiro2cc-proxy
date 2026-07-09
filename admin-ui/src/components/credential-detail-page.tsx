@@ -54,12 +54,13 @@ export function CredentialDetailPage({ credentialId, onBack }: CredentialDetailP
   const totalRequests = recordsData?.total ?? 0
 
   // Per-model aggregation from current page (approximate — full aggregation would need all pages)
-  const byModel = allRecords.reduce<Record<string, { requests: number; inputTokens: number; outputTokens: number; cost: number }>>((acc, r) => {
-    const entry = acc[r.model] ?? { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0 }
+  const byModel = allRecords.reduce<Record<string, { requests: number; inputTokens: number; outputTokens: number; cost: number; credits: number }>>((acc, r) => {
+    const entry = acc[r.model] ?? { requests: 0, inputTokens: 0, outputTokens: 0, cost: 0, credits: 0 }
     entry.requests += 1
     entry.inputTokens += r.inputTokens
     entry.outputTokens += r.outputTokens
     entry.cost += r.estimatedCost
+    entry.credits += r.credits
     acc[r.model] = entry
     return acc
   }, {})
@@ -116,7 +117,7 @@ export function CredentialDetailPage({ credentialId, onBack }: CredentialDetailP
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-              {allRecords.reduce((s, r) => s + (r.creditsUsed ?? r.estimatedCost / 0.72), 0).toFixed(4)}
+              {allRecords.reduce((s, r) => s + r.credits, 0).toFixed(4)}
             </div>
             {(() => {
               const savedTotal = allRecords.reduce((s, r) => s + (r.creditsSaved ?? 0), 0)
@@ -163,7 +164,7 @@ export function CredentialDetailPage({ credentialId, onBack }: CredentialDetailP
                     <span>{m.requests} 次</span>
                     <span>入 {formatTokens(m.inputTokens)}</span>
                     <span>出 {formatTokens(m.outputTokens)}</span>
-                    <span className="font-medium text-blue-600 dark:text-blue-400">{(m.cost / 0.72).toFixed(2)} credits</span>
+                    <span className="font-medium text-blue-600 dark:text-blue-400">{m.credits.toFixed(2)} credits</span>
                   </div>
                 </CardContent>
               </Card>
@@ -235,7 +236,7 @@ export function CredentialDetailPage({ credentialId, onBack }: CredentialDetailP
                           </div>
                         </td>
                         <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
-                          {record.creditsUsed != null ? record.creditsUsed.toFixed(4) : (record.estimatedCost / 0.72).toFixed(4)}
+                          {record.credits.toFixed(4)}
                           {record.creditsUsed != null && <span className="ml-1 text-xs text-green-500">✓</span>}
                           {record.creditsSaved != null && record.creditsSaved > 0 && (
                             <span className="ml-1 text-xs text-green-600 dark:text-green-400">

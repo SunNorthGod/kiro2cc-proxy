@@ -52,7 +52,7 @@ export function DailyDetailPage({ date, onBack }: DailyDetailPageProps) {
   const pageIps = records.map((r) => r.clientIp).filter((ip): ip is string => !!ip)
   const geoMap = useIpGeo(pageIps)
 
-  const totalCredits = records.reduce((s, r) => s + (r.creditsUsed ?? r.estimatedCost / 0.72), 0)
+  const totalCredits = records.reduce((s, r) => s + r.credits, 0)
   const totalCreditsSaved = records.reduce((s, r) => s + (r.creditsSaved ?? 0), 0)
 
   return (
@@ -158,7 +158,7 @@ export function DailyDetailPage({ date, onBack }: DailyDetailPageProps) {
                             </div>
                           </td>
                           <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
-                            {record.creditsUsed != null ? record.creditsUsed.toFixed(4) : (record.estimatedCost / 0.72).toFixed(4)}
+                            {record.credits.toFixed(4)}
                             {record.creditsUsed != null && <span className="ml-1 text-xs text-green-500">✓</span>}
                             {record.creditsSaved != null && record.creditsSaved > 0 && (
                               <span className="ml-1 text-xs text-green-600 dark:text-green-400">
