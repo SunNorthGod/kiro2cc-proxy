@@ -707,14 +707,17 @@ impl KiroProvider {
 
             let url = self.base_url_for(&ctx.credentials);
             let effective_body = Self::rewrite_profile_arn(request_body, &ctx.credentials);
-            // 企业版 IdC 端点不支持顶层 additionalModelRequestFields，剥离以避免 400
-            let effective_body = if ctx
-                .credentials
-                .auth_method
-                .as_deref()
-                .map(|m| m.eq_ignore_ascii_case("idc"))
-                .unwrap_or(false)
-            {
+            // 企业版端点（IdC 的 q.amazonaws.com 与 external_idp 的 runtime.kiro.dev）都不接受顶层
+            // additionalModelRequestFields，会返回 400「... is not supported for this model」。
+            // 消费版 CodeWhisperer 端点可容忍，因此仅对企业版账号剥离。
+            let is_enterprise = ctx.credentials.is_external_idp()
+                || ctx
+                    .credentials
+                    .auth_method
+                    .as_deref()
+                    .map(|m| m.eq_ignore_ascii_case("idc"))
+                    .unwrap_or(false);
+            let effective_body = if is_enterprise {
                 Self::strip_top_level_field(&effective_body, "additionalModelRequestFields")
             } else {
                 effective_body
