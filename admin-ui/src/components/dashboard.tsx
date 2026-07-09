@@ -916,7 +916,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
               )}
               <Button onClick={() => setKamImportDialogOpen(true)} size="sm" variant="outline">
                 <FileUp className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">Kiro Account Manager 导入</span>
+                <span className="hidden sm:inline">账号导入 (KAM/本地登录)</span>
               </Button>
               <Button onClick={() => setBatchImportDialogOpen(true)} size="sm" variant="outline">
                 <Upload className="h-4 w-4 sm:mr-2" />

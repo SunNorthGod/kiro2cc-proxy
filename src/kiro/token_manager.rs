@@ -472,7 +472,13 @@ pub(crate) async fn get_usage_limits(
 
     // 优先级：账号.api_region > config.api_region > config.region
     let region = credentials.effective_api_region(config);
-    let host = format!("q.{}.amazonaws.com", region);
+    let is_ext = credentials.is_external_idp();
+    // external_idp（企业版）走 Kiro 控制面 management.{region}.kiro.dev；其余走 AWS 直连
+    let host = if is_ext {
+        format!("management.{}.kiro.dev", region)
+    } else {
+        format!("q.{}.amazonaws.com", region)
+    };
     let machine_id = machine_id::generate_from_credentials(credentials, config)
         .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
     let kiro_version = &config.kiro_version;
@@ -501,7 +507,7 @@ pub(crate) async fn get_usage_limits(
 
     let client = build_client(proxy, 60, config.tls_backend)?;
 
-    let response = client
+    let mut req = client
         .get(&url)
         .header("x-amz-user-agent", &amz_user_agent)
         .header("User-Agent", &user_agent)
@@ -509,9 +515,12 @@ pub(crate) async fn get_usage_limits(
         .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
         .header("amz-sdk-request", "attempt=1; max=1")
         .header("Authorization", format!("Bearer {}", token))
-        .header("Connection", "close")
-        .send()
-        .await?;
+        .header("Connection", "close");
+    if is_ext {
+        // 告知 Kiro 控制面该 Bearer 是客户 IdP 直签 token
+        req = req.header("TokenType", "EXTERNAL_IDP");
+    }
+    let response = req.send().await?;
 
     let status = response.status();
     if !status.is_success() {
@@ -2554,6 +2563,9 @@ impl MultiTokenManager {
         validated_cred.proxy_username = new_cred.proxy_username;
         validated_cred.proxy_password = new_cred.proxy_password;
 
+        // 捕获 access_token 供添加后同步探测 profileArn（validated_cred 随后被移动进 entry）
+        let validated_token = validated_cred.access_token.clone();
+
         {
             let mut entries = self.entries.lock();
             entries.push(CredentialEntry {
@@ -2570,6 +2582,21 @@ impl MultiTokenManager {
                 last_refreshed_at: None,
                 rotation_bias: 0,
             });
+        }
+
+        // 添加时【同步】探测 profileArn（idc / external_idp）：确保首个请求前 profileArn 已就位，
+        // 避免"添加后立刻使用"因 profileArn 缺失被上游 400。social 账号在 ensure_profile_arn 内直接跳过。
+        if let Some(token) = validated_token {
+            let creds_opt = {
+                let entries = self.entries.lock();
+                entries
+                    .iter()
+                    .find(|e| e.id == new_id)
+                    .map(|e| e.credentials.clone())
+            };
+            if let Some(mut creds) = creds_opt {
+                self.ensure_profile_arn(new_id, &mut creds, &token).await;
+            }
         }
 
         // 6. 自动升级为多账号格式（添加账号后必须能持久化）

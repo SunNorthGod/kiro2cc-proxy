@@ -24,6 +24,7 @@ interface KamAccount {
   email?: string
   userId?: string | null
   nickname?: string
+  provider?: string
   credentials: {
     refreshToken: string
     clientId?: string
@@ -31,6 +32,9 @@ interface KamAccount {
     region?: string
     authMethod?: string
     startUrl?: string
+    tokenEndpoint?: string
+    issuerUrl?: string
+    scopes?: string
   }
   machineId?: string
   status?: string
@@ -71,10 +75,10 @@ function normalizeToKamAccount(item: unknown): unknown {
   if (typeof obj.credentials === 'object' && obj.credentials !== null) return item
   // 顶层有 refreshToken，自动包装
   if (typeof obj.refreshToken === 'string' && obj.refreshToken.trim().length > 0) {
-    const { refreshToken, clientId, clientSecret, region, authMethod, startUrl, ...rest } = obj
+    const { refreshToken, clientId, clientSecret, region, authMethod, startUrl, tokenEndpoint, issuerUrl, scopes, ...rest } = obj
     return {
       ...rest,
-      credentials: { refreshToken, clientId, clientSecret, region, authMethod, startUrl },
+      credentials: { refreshToken, clientId, clientSecret, region, authMethod, startUrl, tokenEndpoint, issuerUrl, scopes },
     }
   }
   return item
@@ -242,8 +246,28 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
         try {
           const clientId = cred.clientId?.trim() || undefined
           const clientSecret = cred.clientSecret?.trim() || undefined
-          const authMethod = clientId && clientSecret ? 'idc' : 'social'
+          const tokenEndpoint = cred.tokenEndpoint?.trim() || undefined
+          const issuerUrl = cred.issuerUrl?.trim() || undefined
+          const scopes = cred.scopes?.trim() || undefined
+          const rawAuth = (cred.authMethod || '').toLowerCase()
+          const providerStr = (account.provider || '').toLowerCase()
+          // external_idp（微软 Entra 等企业直连 IdP）：token 来自客户 IdP，带 tokenEndpoint/issuerUrl，无 clientSecret
+          const isExternalIdp =
+            rawAuth === 'external_idp' || providerStr === 'externalidp' || !!tokenEndpoint || !!issuerUrl
 
+          let authMethod: 'social' | 'idc' | 'external_idp'
+          if (isExternalIdp) {
+            authMethod = 'external_idp'
+          } else if (clientId && clientSecret) {
+            authMethod = 'idc'
+          } else {
+            authMethod = 'social'
+          }
+
+          // external_idp 需要 clientId + tokenEndpoint（或 issuerUrl 用于自动发现）
+          if (authMethod === 'external_idp' && (!clientId || (!tokenEndpoint && !issuerUrl))) {
+            throw new Error('external_idp 需要 clientId 和 tokenEndpoint（或 issuerUrl）')
+          }
           // idc 模式下必须同时提供 clientId 和 clientSecret
           if (authMethod === 'social' && (clientId || clientSecret)) {
             throw new Error('idc 模式需要同时提供 clientId 和 clientSecret')
@@ -256,6 +280,9 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             authRegion: cred.region?.trim() || undefined,
             clientId,
             clientSecret,
+            tokenEndpoint,
+            issuerUrl,
+            scopes,
             machineId: account.machineId?.trim() || undefined,
           })
 
@@ -385,14 +412,14 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
     >
       <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>KAM 账号导入（自动验活）</DialogTitle>
+          <DialogTitle>账号导入（KAM 导出 / 本地 Kiro 登录，自动验活）</DialogTitle>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto space-y-4 py-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium">KAM 导出 JSON</label>
+            <label className="text-sm font-medium">导入 JSON（KAM 导出 或 本地 kiro-auth-token.json）</label>
             <textarea
-              placeholder={'粘贴 KAM 导出 JSON 或将文件拖拽到此处'}
+              placeholder={'粘贴 KAM 导出 JSON，或本地 ~/.aws/sso/cache/kiro-auth-token.json 全文（自动识别 external_idp / idc / social），也可拖入 .json 文件'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
@@ -412,7 +439,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
               disabled={importing}
               className="flex min-h-[200px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
             />
-            <p className="text-xs text-muted-foreground">支持粘贴 JSON 文本或直接拖入 .json 文件</p>
+            <p className="text-xs text-muted-foreground">支持 KAM 批量导出，也支持单个本地 kiro-auth-token.json（含微软 Entra external_idp）。IdC/BuilderId 建议改用「SSO 登录」，本地 refreshToken 可能已被截断失效。</p>
           </div>
 
           {/* 解析预览 */}
