@@ -103,8 +103,9 @@ pub async fn user_auth_middleware(
     }
 }
 
-/// 分销商 API 认证中间件
-/// 完整校验（启用 + 未过期），并要求该 key 为分销卡密，注入 ResellerContext。
+/// 子卡密管理 API 认证中间件
+/// 完整校验（启用 + 未过期），并要求该 key 能管理子卡密
+/// （按额度的卡且本身不是子卡密），注入 ResellerContext。
 pub async fn reseller_auth_middleware(
     State(state): State<UserState>,
     mut request: Request<Body>,
@@ -123,14 +124,17 @@ pub async fn reseller_auth_middleware(
     };
 
     match state.api_key_manager.authenticate(&key) {
-        ApiKeyAuthResult::Valid {
-            id, is_reseller, ..
-        } => {
-            if !is_reseller {
+        ApiKeyAuthResult::Valid { id, .. } => {
+            let can_manage = state
+                .api_key_manager
+                .get(id)
+                .map(|k| k.can_manage_subkeys())
+                .unwrap_or(false);
+            if !can_manage {
                 return (
                     StatusCode::FORBIDDEN,
                     axum::Json(UserErrorResponse {
-                        error: "该 API Key 不是分销卡密".into(),
+                        error: "该 API Key 不支持开子卡密（需为按额度的卡，且本身不是子卡密）".into(),
                     }),
                 )
                     .into_response();
@@ -143,14 +147,14 @@ pub async fn reseller_auth_middleware(
         ApiKeyAuthResult::Disabled => (
             StatusCode::FORBIDDEN,
             axum::Json(UserErrorResponse {
-                error: "分销卡密已被禁用".into(),
+                error: "API Key 已被禁用".into(),
             }),
         )
             .into_response(),
         ApiKeyAuthResult::Expired => (
             StatusCode::FORBIDDEN,
             axum::Json(UserErrorResponse {
-                error: "分销卡密已过期".into(),
+                error: "API Key 已过期".into(),
             }),
         )
             .into_response(),

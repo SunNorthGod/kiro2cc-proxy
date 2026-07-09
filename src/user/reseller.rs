@@ -38,8 +38,10 @@ pub struct SubKeyView {
 pub struct ResellerOverview {
     pub id: u32,
     pub name: String,
-    /// 分销预算（credit_limit）
+    /// 额度预算（credit_limit）
     pub budget: Option<f64>,
+    /// 父卡密自己已消耗的真实 credits（共享额度池的一部分）
+    pub own_used: f64,
     /// 已分配给存活子卡密的额度之和
     pub allocated: f64,
     /// 已结算额度（删除子卡密时累计的真实消耗）
@@ -65,9 +67,11 @@ pub async fn overview(
         .iter()
         .map(|c| c.credit_limit.unwrap_or(0.0))
         .sum();
+    // 父卡密自己已消耗的真实 credits（共享额度池的一部分）
+    let own_used = state.usage_tracker.get_total_credits(ctx.reseller_id);
     let allocatable = state
         .api_key_manager
-        .allocatable_credits(ctx.reseller_id)
+        .allocatable_credits(ctx.reseller_id, own_used)
         .unwrap_or(0.0);
 
     let sub_keys: Vec<SubKeyView> = children
@@ -90,6 +94,7 @@ pub async fn overview(
         id: reseller.id,
         name: reseller.name.clone(),
         budget: reseller.credit_limit,
+        own_used,
         allocated,
         committed: reseller.committed_credits,
         allocatable,
@@ -121,8 +126,10 @@ pub async fn create_sub_key(
     if payload.name.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "请填写子卡密名称");
     }
+    let own_used = state.usage_tracker.get_total_credits(ctx.reseller_id);
     match state.api_key_manager.create_child(
         ctx.reseller_id,
+        own_used,
         payload.name,
         payload.credit_limit,
         payload.duration_days,
@@ -153,8 +160,10 @@ pub async fn update_sub_key(
     Json(payload): Json<UpdateSubKeyRequest>,
 ) -> impl IntoResponse {
     let spent = state.usage_tracker.get_total_credits(child_id);
+    let own_used = state.usage_tracker.get_total_credits(ctx.reseller_id);
     match state.api_key_manager.update_child(
         ctx.reseller_id,
+        own_used,
         child_id,
         payload.name,
         payload.enabled,
@@ -187,8 +196,10 @@ pub async fn topup_sub_key(
     if payload.add_credits.is_none() && payload.add_days.is_none() {
         return err(StatusCode::BAD_REQUEST, "请至少提供 addCredits 或 addDays");
     }
+    let own_used = state.usage_tracker.get_total_credits(ctx.reseller_id);
     match state.api_key_manager.topup_child(
         ctx.reseller_id,
+        own_used,
         child_id,
         payload.add_credits,
         payload.add_days,

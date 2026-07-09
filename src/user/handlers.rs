@@ -23,7 +23,6 @@ pub async fn login(
             name,
             spending_limit,
             credit_limit,
-            is_reseller,
             ..
         } => {
             // 查询用量
@@ -31,8 +30,12 @@ pub async fn login(
             // 查询 key 详情（过期时间等）
             let keys = state.api_key_manager.list();
             let key_info = keys.iter().find(|k| k.id == id);
-            let allocatable_credits = if is_reseller {
-                state.api_key_manager.allocatable_credits(id)
+            let can_manage_subkeys = key_info.map(|k| k.can_manage_subkeys()).unwrap_or(false);
+            // 共享额度池：可再分配 = 预算 - 自己已花 - 已预留
+            let allocatable_credits = if can_manage_subkeys {
+                state
+                    .api_key_manager
+                    .allocatable_credits(id, summary.total_credits)
             } else {
                 None
             };
@@ -47,7 +50,7 @@ pub async fn login(
                 expires_at: key_info.and_then(|k| k.expires_at.map(|t| t.to_rfc3339())),
                 duration_days: key_info.and_then(|k| k.duration_days),
                 activated_at: key_info.and_then(|k| k.activated_at.map(|t| t.to_rfc3339())),
-                is_reseller,
+                can_manage_subkeys,
                 allocatable_credits,
             };
             (StatusCode::OK, Json(response)).into_response()
@@ -87,9 +90,11 @@ pub async fn get_usage(
     // 查询 key 详情
     let keys = state.api_key_manager.list();
     let key_info = keys.iter().find(|k| k.id == ctx.key_id);
-    let is_reseller = key_info.map(|k| k.is_reseller).unwrap_or(false);
-    let allocatable_credits = if is_reseller {
-        state.api_key_manager.allocatable_credits(ctx.key_id)
+    let can_manage_subkeys = key_info.map(|k| k.can_manage_subkeys()).unwrap_or(false);
+    let allocatable_credits = if can_manage_subkeys {
+        state
+            .api_key_manager
+            .allocatable_credits(ctx.key_id, summary.total_credits)
     } else {
         None
     };
@@ -108,7 +113,7 @@ pub async fn get_usage(
         total_cost: summary.total_cost,
         total_credits: summary.total_credits,
         by_model: summary.by_model,
-        is_reseller,
+        can_manage_subkeys,
         allocatable_credits,
     };
     Json(response)
@@ -156,9 +161,9 @@ pub struct LoginResponse {
     pub expires_at: Option<String>,
     pub duration_days: Option<f64>,
     pub activated_at: Option<String>,
-    /// 是否为分销卡密（前端据此显示"子卡密管理"面板）
-    pub is_reseller: bool,
-    /// 分销卡密可再分配额度（仅分销卡密有值）
+    /// 是否可管理子卡密（前端据此显示"子卡密管理"面板）
+    pub can_manage_subkeys: bool,
+    /// 可再分配额度（仅可管理子卡密的卡有值）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allocatable_credits: Option<f64>,
 }
@@ -179,9 +184,9 @@ pub struct UsageResponse {
     pub total_cost: f64,
     pub total_credits: f64,
     pub by_model: Vec<crate::model::usage::ModelUsage>,
-    /// 是否为分销卡密
-    pub is_reseller: bool,
-    /// 分销卡密可再分配额度（仅分销卡密有值）
+    /// 是否可管理子卡密
+    pub can_manage_subkeys: bool,
+    /// 可再分配额度（仅可管理子卡密的卡有值）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allocatable_credits: Option<f64>,
 }

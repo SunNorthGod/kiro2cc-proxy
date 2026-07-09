@@ -12,8 +12,8 @@ use serde::Serialize;
 use super::{
     middleware::AdminState,
     types::{
-        AdminErrorResponse, CreateApiKeyRequest, SetResellerRequest, SuccessResponse,
-        TopUpApiKeyRequest, UpdateApiKeyRequest,
+        AdminErrorResponse, CreateApiKeyRequest, SuccessResponse, TopUpApiKeyRequest,
+        UpdateApiKeyRequest,
     },
 };
 
@@ -94,10 +94,12 @@ pub async fn update_api_key(
         payload.bound_credential_ids,
     ) {
         Ok(Some(api_key)) => {
-            // 分销卡密启用/禁用时级联到其子卡密
-            if api_key.is_reseller && let Some(enabled) = payload.enabled {
+            // 有子卡密的父卡密启用/禁用时级联到其子卡密
+            if let Some(enabled) = payload.enabled
+                && manager.has_children(id)
+            {
                 if let Err(e) = manager.set_children_disabled(id, !enabled) {
-                    tracing::warn!(reseller_id = id, error = %e, "级联设置子卡密启用状态失败");
+                    tracing::warn!(parent_id = id, error = %e, "级联设置子卡密启用状态失败");
                 }
             }
             Json(api_key).into_response()
@@ -143,33 +145,8 @@ pub async fn top_up_api_key(
     }
 }
 
-/// POST /api/admin/api-keys/:id/reseller
-/// 设置/取消某 Key 的分销卡密身份
-pub async fn set_api_key_reseller(
-    State(state): State<AdminState>,
-    Path(id): Path<u32>,
-    Json(payload): Json<SetResellerRequest>,
-) -> impl IntoResponse {
-    let Some(manager) = &state.api_key_manager else {
-        let error = AdminErrorResponse::internal_error("API Key 管理未启用");
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response();
-    };
-
-    match manager.set_reseller(id, payload.is_reseller) {
-        Ok(Some(api_key)) => Json(api_key).into_response(),
-        Ok(None) => {
-            let error = AdminErrorResponse::not_found(format!("API Key #{} 不存在", id));
-            (StatusCode::NOT_FOUND, Json(error)).into_response()
-        }
-        Err(e) => {
-            let error = AdminErrorResponse::invalid_request(e.to_string());
-            (StatusCode::BAD_REQUEST, Json(error)).into_response()
-        }
-    }
-}
-
 /// DELETE /api/admin/api-keys/:id
-/// 删除 API Key（分销卡密会级联删除其所有子卡密）
+/// 删除 API Key（有子卡密的父卡密会级联删除其所有子卡密）
 pub async fn delete_api_key(
     State(state): State<AdminState>,
     Path(id): Path<u32>,
@@ -179,10 +156,9 @@ pub async fn delete_api_key(
         return (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response();
     };
 
-    // 分销卡密：级联删除其名下所有子卡密
-    let is_reseller = manager.get(id).map(|k| k.is_reseller).unwrap_or(false);
-    let result = if is_reseller {
-        manager.delete_reseller_cascade(id)
+    // 有子卡密的父卡密：级联删除其名下所有子卡密
+    let result = if manager.has_children(id) {
+        manager.delete_with_children(id)
     } else {
         manager.delete(id)
     };

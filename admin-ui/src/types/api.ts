@@ -122,11 +122,9 @@ export interface ApiKeyItem {
   durationDays: number | null
   activatedAt: string | null
   boundCredentialIds?: number[]
-  /** 是否为分销卡密 */
-  isReseller?: boolean
-  /** 父分销卡密 ID（仅子卡密有值） */
+  /** 父卡密 ID（仅子卡密有值） */
   parentKeyId?: number | null
-  /** 已结算额度（仅分销卡密） */
+  /** 已结算额度（仅有子卡密的父卡密） */
   committedCredits?: number
 }
 

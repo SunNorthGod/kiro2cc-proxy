@@ -100,7 +100,8 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
   }
 
   const budget = data?.budget ?? 0
-  const usedOfBudget = data ? data.allocated + data.committed : 0
+  // 共享额度池占用 = 自己已花 + 已分配给子卡 + 已结算
+  const usedOfBudget = data ? data.ownUsed + data.allocated + data.committed : 0
   const budgetPercent = budget > 0 ? Math.min((usedOfBudget / budget) * 100, 100) : 0
 
   return (
@@ -127,7 +128,7 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
         ) : data ? (
           <>
             {/* 预算概览 */}
-            <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+            <div className="grid gap-4 grid-cols-2 md:grid-cols-5">
               <Card>
                 <CardContent className="pt-6">
                   <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
@@ -148,8 +149,16 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
               </Card>
               <Card>
                 <CardContent className="pt-6">
+                  <div className="text-muted-foreground text-sm mb-1">自己已用</div>
+                  <div className="text-2xl font-bold">{formatCredits(data.ownUsed)}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">本卡直接消耗</div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="pt-6">
                   <div className="text-muted-foreground text-sm mb-1">已分配</div>
                   <div className="text-2xl font-bold">{formatCredits(data.allocated)}</div>
+                  <div className="text-xs text-muted-foreground mt-0.5">子卡密占用</div>
                 </CardContent>
               </Card>
               <Card>
@@ -164,7 +173,7 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
             {budget > 0 && (
               <div className="space-y-1.5">
                 <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">预算占用（已分配 + 已结算）</span>
+                  <span className="text-muted-foreground">预算占用（自己已用 + 已分配 + 已结算）</span>
                   <span>{formatCredits(usedOfBudget)} / {formatCredits(budget)}</span>
                 </div>
                 <Progress value={budgetPercent} />

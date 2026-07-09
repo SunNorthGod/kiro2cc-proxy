@@ -13,9 +13,9 @@ export interface LoginResponse {
   expiresAt: string | null
   durationDays: number | null
   activatedAt: string | null
-  /** 是否为分销卡密 */
-  isReseller: boolean
-  /** 分销卡密可再分配额度（仅分销卡密有值） */
+  /** 是否可管理子卡密 */
+  canManageSubKeys: boolean
+  /** 可再分配额度（仅可管理子卡密的卡有值） */
   allocatableCredits?: number | null
 }
 
@@ -33,11 +33,13 @@ export interface SubKey {
   activatedAt: string | null
 }
 
-/** 分销商概览 */
+/** 子卡密管理概览（共享额度池） */
 export interface ResellerOverview {
   id: number
   name: string
   budget: number | null
+  /** 父卡密自己已消耗的 credits（共享池的一部分） */
+  ownUsed: number
   allocated: number
   committed: number
   allocatable: number
@@ -70,9 +72,9 @@ export interface UsageResponse {
   totalCost: number
   totalCredits: number
   byModel: ModelUsage[]
-  /** 是否为分销卡密 */
-  isReseller: boolean
-  /** 分销卡密可再分配额度 */
+  /** 是否可管理子卡密 */
+  canManageSubKeys: boolean
+  /** 可再分配额度 */
   allocatableCredits?: number | null
 }
 

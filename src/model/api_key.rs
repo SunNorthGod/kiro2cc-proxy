@@ -39,16 +39,12 @@ pub struct ApiKey {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bound_credential_ids: Option<Vec<u64>>,
-    /// 是否为分销卡密（reseller）。分销卡密是"管理凭据"，只能用于开/管理子卡密，
-    /// 禁止直接用于推理请求。其 credit_limit 即分销商的可分配预算。
-    #[serde(default)]
-    pub is_reseller: bool,
-    /// 父分销卡密 ID（仅子卡密有值）。子卡密从父卡密的预算中预扣额度。
+    /// 父卡密 ID（仅子卡密有值）。子卡密从父卡密的共享额度池中预扣额度。
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_key_id: Option<u32>,
-    /// 已结算额度（仅分销卡密有值）。当子卡密被删除时，把它已消耗的真实 credits
-    /// 累加到父卡密的 committed_credits，从而"用掉的钱不退回"，未用完的额度释放。
+    /// 已结算额度（仅有子卡密的父卡密有值）。当子卡密被删除时，把它已消耗的真实
+    /// credits 累加到父卡密的 committed_credits，从而"用掉的钱不退回"，未用完的额度释放。
     #[serde(default)]
     pub committed_credits: f64,
 }
@@ -81,10 +77,15 @@ impl ApiKey {
             duration_days,
             activated_at: None,
             bound_credential_ids,
-            is_reseller: false,
             parent_key_id: None,
             committed_credits: 0.0,
         }
+    }
+
+    /// 是否可以开设 / 管理子卡密。
+    /// 规则：必须是"按额度"的卡（有 credit_limit 预算），且自身不是别人的子卡密（单层）。
+    pub fn can_manage_subkeys(&self) -> bool {
+        self.credit_limit.is_some() && self.parent_key_id.is_none()
     }
 
     /// 检查 key 是否有效（启用且未过期）
@@ -144,8 +145,8 @@ pub enum ApiKeyAuthResult {
         spending_limit: Option<f64>,
         credit_limit: Option<f64>,
         bound_credential_ids: Option<Vec<u64>>,
-        /// 是否为分销卡密（管理凭据，禁止用于推理）
-        is_reseller: bool,
+        /// 已预留额度（Σ子卡密额度 + 已结算）。父卡密自己可用额度 = credit_limit - reserved_credits。
+        reserved_credits: f64,
     },
     /// Key 已被禁用
     Disabled,
@@ -223,13 +224,14 @@ impl ApiKeyManager {
                 } else if api_key.is_expired() {
                     ApiKeyAuthResult::Expired
                 } else {
+                    let reserved = reserved_credits_for(&keys, api_key);
                     ApiKeyAuthResult::Valid {
                         id: api_key.id,
                         name: api_key.name.clone(),
                         spending_limit: api_key.spending_limit,
                         credit_limit: api_key.credit_limit,
                         bound_credential_ids: api_key.bound_credential_ids.clone(),
-                        is_reseller: api_key.is_reseller,
+                        reserved_credits: reserved,
                     }
                 }
             }
@@ -242,14 +244,17 @@ impl ApiKeyManager {
     pub fn authenticate_readonly(&self, key: &str) -> ApiKeyAuthResult {
         let keys = self.keys.read();
         match keys.iter().find(|k| k.key == key) {
-            Some(api_key) => ApiKeyAuthResult::Valid {
-                id: api_key.id,
-                name: api_key.name.clone(),
-                spending_limit: api_key.spending_limit,
-                credit_limit: api_key.credit_limit,
-                bound_credential_ids: api_key.bound_credential_ids.clone(),
-                is_reseller: api_key.is_reseller,
-            },
+            Some(api_key) => {
+                let reserved = reserved_credits_for(&keys, api_key);
+                ApiKeyAuthResult::Valid {
+                    id: api_key.id,
+                    name: api_key.name.clone(),
+                    spending_limit: api_key.spending_limit,
+                    credit_limit: api_key.credit_limit,
+                    bound_credential_ids: api_key.bound_credential_ids.clone(),
+                    reserved_credits: reserved,
+                }
+            }
             None => ApiKeyAuthResult::NotFound,
         }
     }
@@ -438,14 +443,14 @@ impl ApiKeyManager {
         Ok(())
     }
 
-    // ==================== 分销卡密（reseller）相关 ====================
+    // ==================== 子卡密（共享额度池）相关 ====================
 
     /// 获取指定 key 的克隆
     pub fn get(&self, id: u32) -> Option<ApiKey> {
         self.keys.read().iter().find(|k| k.id == id).cloned()
     }
 
-    /// 列出某分销卡密的所有子卡密
+    /// 列出某父卡密的所有子卡密
     pub fn list_children(&self, parent_id: u32) -> Vec<ApiKey> {
         self.keys
             .read()
@@ -455,53 +460,28 @@ impl ApiKeyManager {
             .collect()
     }
 
-    /// 计算分销卡密的可分配余额：预算 - Σ(子卡密已分配额度) - 已结算额度。
-    /// 返回 None 表示该 key 不是有效分销卡密（不存在 / 非 reseller / 无预算）。
-    pub fn allocatable_credits(&self, reseller_id: u32) -> Option<f64> {
+    /// 计算父卡密还能再分配给新子卡密的额度：
+    ///   预算 - 父卡密自己已花(own_spent) - Σ(子卡密已分配额度) - 已结算额度
+    ///
+    /// 这是"共享额度池"模型的核心：父卡密自己消耗、子卡密占用、已删除子卡密的结算,
+    /// 三者共同占用同一个 credit_limit 预算，任何分配都不能让总占用超过预算。
+    /// 返回 None 表示该 key 不能管理子卡密（不存在 / 无额度预算 / 本身是子卡密）。
+    pub fn allocatable_credits(&self, parent_id: u32, own_spent: f64) -> Option<f64> {
         let keys = self.keys.read();
-        let reseller = keys.iter().find(|k| k.id == reseller_id)?;
-        if !reseller.is_reseller {
+        let parent = keys.iter().find(|k| k.id == parent_id)?;
+        if !parent.can_manage_subkeys() {
             return None;
         }
-        let budget = reseller.credit_limit?;
-        let allocated: f64 = keys
-            .iter()
-            .filter(|k| k.parent_key_id == Some(reseller_id))
-            .map(|k| k.credit_limit.unwrap_or(0.0))
-            .sum();
-        Some(budget - allocated - reseller.committed_credits)
+        Some(allocatable_locked(&keys, parent, own_spent))
     }
 
-    /// 管理端：将某 key 标记为 / 取消分销卡密。
-    /// - 标记为分销：不能是子卡密，且必须已设置额度预算(credit_limit)。
-    /// - 取消分销：必须没有任何子卡密。
-    pub fn set_reseller(&self, id: u32, is_reseller: bool) -> anyhow::Result<Option<ApiKey>> {
-        let mut keys = self.keys.write();
-        let Some(idx) = keys.iter().position(|k| k.id == id) else {
-            return Ok(None);
-        };
-        if is_reseller {
-            if keys[idx].parent_key_id.is_some() {
-                anyhow::bail!("子卡密不能设为分销卡密");
-            }
-            if keys[idx].credit_limit.is_none() {
-                anyhow::bail!("分销卡密必须先设置额度预算(credit_limit)");
-            }
-        } else if keys.iter().any(|c| c.parent_key_id == Some(id)) {
-            anyhow::bail!("请先删除该分销卡密名下的所有子卡密");
-        }
-        keys[idx].is_reseller = is_reseller;
-        let updated = keys[idx].clone();
-        drop(keys);
-        self.save()?;
-        Ok(Some(updated))
-    }
-
-    /// 分销商开子卡密。原子校验可分配额度，继承父卡密的账号绑定，
+    /// 父卡密开子卡密。原子校验共享池可分配额度，继承父卡密的账号绑定，
     /// 到期时间受父卡密约束（见 resolve_child_schedule）。
+    /// `parent_own_spent`：父卡密自己已消耗的真实 credits（由用量追踪器提供）。
     pub fn create_child(
         &self,
         parent_id: u32,
+        parent_own_spent: f64,
         name: String,
         credit_limit: f64,
         duration_days: Option<f64>,
@@ -511,20 +491,12 @@ impl ApiKeyManager {
         }
         let mut keys = self.keys.write();
         let Some(pidx) = keys.iter().position(|k| k.id == parent_id) else {
-            anyhow::bail!("分销卡密不存在");
+            anyhow::bail!("卡密不存在");
         };
-        if !keys[pidx].is_reseller {
-            anyhow::bail!("该卡密不是分销卡密");
+        if !keys[pidx].can_manage_subkeys() {
+            anyhow::bail!("该卡密不支持开子卡密（需为按额度的卡，且本身不是子卡密）");
         }
-        let budget = keys[pidx]
-            .credit_limit
-            .ok_or_else(|| anyhow::anyhow!("分销卡密未设置预算"))?;
-        let allocated: f64 = keys
-            .iter()
-            .filter(|k| k.parent_key_id == Some(parent_id))
-            .map(|k| k.credit_limit.unwrap_or(0.0))
-            .sum();
-        let allocatable = budget - allocated - keys[pidx].committed_credits;
+        let allocatable = allocatable_locked(&keys, &keys[pidx], parent_own_spent);
         if credit_limit > allocatable + ALLOC_EPS {
             anyhow::bail!(
                 "超出可分配额度：可分配 {:.2} credits，请求 {:.2} credits",
@@ -553,13 +525,15 @@ impl ApiKeyManager {
         Ok(child)
     }
 
-    /// 分销商更新自己的子卡密（name / enabled / credit_limit）。
-    /// - `child_spent`：该子卡密已消耗的真实 credits（由用量追踪器提供），
-    ///   新额度不得低于已消耗值。
-    /// - 校验子卡密确属该分销商，且额度变化不超过可分配余额。
+    /// 父卡密更新自己的子卡密（name / enabled / credit_limit）。
+    /// - `child_spent`：该子卡密已消耗的真实 credits，新额度不得低于已消耗值。
+    /// - `parent_own_spent`：父卡密自己已消耗的真实 credits（用于共享池校验）。
+    /// - 校验子卡密确属该父卡密，且额度增量不超过共享池可分配余额。
+    #[allow(clippy::too_many_arguments)]
     pub fn update_child(
         &self,
-        reseller_id: u32,
+        parent_id: u32,
+        parent_own_spent: f64,
         child_id: u32,
         name: Option<String>,
         enabled: Option<bool>,
@@ -570,7 +544,7 @@ impl ApiKeyManager {
         let Some(cidx) = keys.iter().position(|k| k.id == child_id) else {
             return Ok(None);
         };
-        if keys[cidx].parent_key_id != Some(reseller_id) {
+        if keys[cidx].parent_key_id != Some(parent_id) {
             anyhow::bail!("无权操作该子卡密");
         }
 
@@ -588,9 +562,11 @@ impl ApiKeyManager {
             let old_limit = keys[cidx].credit_limit.unwrap_or(0.0);
             let delta = new_limit - old_limit;
             if delta > 0.0 {
-                let allocatable = self
-                    .allocatable_credits_locked(&keys, reseller_id)
-                    .ok_or_else(|| anyhow::anyhow!("分销卡密无效"))?;
+                let parent = keys
+                    .iter()
+                    .find(|k| k.id == parent_id)
+                    .ok_or_else(|| anyhow::anyhow!("父卡密不存在"))?;
+                let allocatable = allocatable_locked(&keys, parent, parent_own_spent);
                 if delta > allocatable + ALLOC_EPS {
                     anyhow::bail!(
                         "超出可分配额度：可分配 {:.2}，需新增 {:.2} credits",
@@ -613,12 +589,14 @@ impl ApiKeyManager {
         Ok(Some(updated))
     }
 
-    /// 分销商给子卡密续费（叠加额度 / 时长）。
-    /// - add_credits 受可分配余额约束。
+    /// 父卡密给子卡密续费（叠加额度 / 时长）。
+    /// - add_credits 受共享池可分配余额约束。
     /// - add_days 对固定到期子卡密延长且不超过父卡密到期时间；对懒激活子卡密叠加时长。
+    #[allow(clippy::too_many_arguments)]
     pub fn topup_child(
         &self,
-        reseller_id: u32,
+        parent_id: u32,
+        parent_own_spent: f64,
         child_id: u32,
         add_credits: Option<f64>,
         add_days: Option<f64>,
@@ -627,7 +605,7 @@ impl ApiKeyManager {
         let Some(cidx) = keys.iter().position(|k| k.id == child_id) else {
             return Ok(None);
         };
-        if keys[cidx].parent_key_id != Some(reseller_id) {
+        if keys[cidx].parent_key_id != Some(parent_id) {
             anyhow::bail!("无权操作该子卡密");
         }
 
@@ -635,9 +613,11 @@ impl ApiKeyManager {
             if c <= 0.0 {
                 anyhow::bail!("充值额度必须大于 0");
             }
-            let allocatable = self
-                .allocatable_credits_locked(&keys, reseller_id)
-                .ok_or_else(|| anyhow::anyhow!("分销卡密无效"))?;
+            let parent = keys
+                .iter()
+                .find(|k| k.id == parent_id)
+                .ok_or_else(|| anyhow::anyhow!("父卡密不存在"))?;
+            let allocatable = allocatable_locked(&keys, parent, parent_own_spent);
             if c > allocatable + ALLOC_EPS {
                 anyhow::bail!(
                     "超出可分配额度：可分配 {:.2}，请求充值 {:.2} credits",
@@ -652,7 +632,7 @@ impl ApiKeyManager {
             if d <= 0.0 {
                 anyhow::bail!("充值时长必须大于 0");
             }
-            let parent_expires = keys.iter().find(|k| k.id == reseller_id).and_then(|p| p.expires_at);
+            let parent_expires = keys.iter().find(|k| k.id == parent_id).and_then(|p| p.expires_at);
             let child = &mut keys[cidx];
             if child.is_active() && child.expires_at.is_some() {
                 let extension = chrono::Duration::milliseconds((d * 86_400_000.0) as i64);
@@ -687,7 +667,7 @@ impl ApiKeyManager {
     }
 
     /// 删除子卡密并把其已消耗额度结算到父卡密（钱花了不退，未用完的额度释放）。
-    /// `spent` 为该子卡密真实消耗的 credits。校验归属（若提供 reseller_id）。
+    /// `spent` 为该子卡密真实消耗的 credits。校验归属（若提供 expect_parent）。
     pub fn delete_child_committing(
         &self,
         child_id: u32,
@@ -715,11 +695,11 @@ impl ApiKeyManager {
         Ok(true)
     }
 
-    /// 级联删除分销卡密及其所有子卡密（父卡密消失，无需结算）。
-    pub fn delete_reseller_cascade(&self, reseller_id: u32) -> anyhow::Result<bool> {
+    /// 级联删除父卡密及其所有子卡密（父卡密消失，无需结算）。
+    pub fn delete_with_children(&self, parent_id: u32) -> anyhow::Result<bool> {
         let mut keys = self.keys.write();
         let before = keys.len();
-        keys.retain(|k| k.id != reseller_id && k.parent_key_id != Some(reseller_id));
+        keys.retain(|k| k.id != parent_id && k.parent_key_id != Some(parent_id));
         let removed = keys.len() < before;
         drop(keys);
         if removed {
@@ -728,7 +708,15 @@ impl ApiKeyManager {
         Ok(removed)
     }
 
-    /// 级联启用 / 禁用某分销卡密名下的所有子卡密。
+    /// 判断某 key 是否有子卡密
+    pub fn has_children(&self, parent_id: u32) -> bool {
+        self.keys
+            .read()
+            .iter()
+            .any(|k| k.parent_key_id == Some(parent_id))
+    }
+
+    /// 级联启用 / 禁用某父卡密名下的所有子卡密。
     pub fn set_children_disabled(&self, parent_id: u32, disabled: bool) -> anyhow::Result<()> {
         let mut keys = self.keys.write();
         let mut changed = false;
@@ -744,26 +732,31 @@ impl ApiKeyManager {
         }
         Ok(())
     }
-
-    /// 在已持有读/写锁的情况下计算可分配余额（内部辅助）。
-    fn allocatable_credits_locked(&self, keys: &[ApiKey], reseller_id: u32) -> Option<f64> {
-        let reseller = keys.iter().find(|k| k.id == reseller_id)?;
-        if !reseller.is_reseller {
-            return None;
-        }
-        let budget = reseller.credit_limit?;
-        let allocated: f64 = keys
-            .iter()
-            .filter(|k| k.parent_key_id == Some(reseller_id))
-            .map(|k| k.credit_limit.unwrap_or(0.0))
-            .sum();
-        Some(budget - allocated - reseller.committed_credits)
-    }
     // APPEND_MARKER2
 }
 
 /// 允许的浮点误差（credits 比较）
 const ALLOC_EPS: f64 = 1e-6;
+
+/// 在已持有锁的情况下，计算某父卡密的"已预留额度"：
+///   Σ(子卡密已分配额度) + 已结算额度(committed_credits)
+///
+/// 父卡密自己可用额度 = credit_limit - reserved；无 credit_limit（不限额）时预留视为 0。
+fn reserved_credits_for(keys: &[ApiKey], parent: &ApiKey) -> f64 {
+    let allocated: f64 = keys
+        .iter()
+        .filter(|k| k.parent_key_id == Some(parent.id))
+        .map(|k| k.credit_limit.unwrap_or(0.0))
+        .sum();
+    allocated + parent.committed_credits
+}
+
+/// 在已持有锁的情况下计算共享池可分配余额：
+///   预算 - 父卡密自己已花 - 已预留(Σ子卡密 + 已结算)
+fn allocatable_locked(keys: &[ApiKey], parent: &ApiKey, own_spent: f64) -> f64 {
+    let budget = parent.credit_limit.unwrap_or(0.0);
+    budget - own_spent - reserved_credits_for(keys, parent)
+}
 
 /// 计算子卡密的到期计划。
 ///
@@ -795,7 +788,7 @@ fn resolve_child_schedule(
 }
 
 #[cfg(test)]
-mod reseller_tests {
+mod subkey_tests {
     use super::*;
 
     fn new_manager() -> ApiKeyManager {
@@ -804,178 +797,197 @@ mod reseller_tests {
         ApiKeyManager::load(dir.join("keys.json")).unwrap()
     }
 
-    /// 创建一个带预算的分销卡密，返回其 id
-    fn make_reseller(mgr: &ApiKeyManager, budget: f64) -> u32 {
-        let k = mgr
-            .create("reseller".into(), None, None, Some(budget), None, None)
+    /// 创建一个带额度预算的父卡密，返回其 id
+    fn make_parent(mgr: &ApiKeyManager, budget: f64) -> u32 {
+        mgr.create("parent".into(), None, None, Some(budget), None, None)
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn test_can_manage_subkeys() {
+        let mgr = new_manager();
+        // 按额度的卡：可以
+        let p = mgr.get(make_parent(&mgr, 1000.0)).unwrap();
+        assert!(p.can_manage_subkeys());
+        // 无额度（时长/永久）的卡：不行
+        let t = mgr
+            .create("t".into(), None, None, None, Some(30.0), None)
             .unwrap();
-        mgr.set_reseller(k.id, true).unwrap();
-        k.id
+        assert!(!t.can_manage_subkeys());
+        // 子卡密：不行（单层）
+        let child = mgr.create_child(p.id, 0.0, "c".into(), 100.0, None).unwrap();
+        assert!(!child.can_manage_subkeys());
     }
 
     #[test]
-    fn test_set_reseller_requires_budget() {
+    fn test_shared_pool_own_spend_reduces_allocatable() {
         let mgr = new_manager();
-        let k = mgr
-            .create("no-budget".into(), None, None, None, None, None)
-            .unwrap();
-        // 无预算不能设为分销卡密
-        assert!(mgr.set_reseller(k.id, true).is_err());
+        let pid = make_parent(&mgr, 1000.0);
+        // 无消耗、无子卡：可分配 1000
+        assert_eq!(mgr.allocatable_credits(pid, 0.0), Some(1000.0));
+        // 父卡自己已花 300：可分配 700
+        assert_eq!(mgr.allocatable_credits(pid, 300.0), Some(700.0));
+        // 开一个 400 的子卡（父已花 300）：需 400 <= 700 OK
+        mgr.create_child(pid, 300.0, "c1".into(), 400.0, None).unwrap();
+        // 现在可分配 = 1000 - 300(自花) - 400(子卡) = 300
+        assert_eq!(mgr.allocatable_credits(pid, 300.0), Some(300.0));
     }
 
     #[test]
-    fn test_child_cannot_be_reseller() {
+    fn test_overallocation_guard_shared_pool() {
         let mgr = new_manager();
-        let rid = make_reseller(&mgr, 1000.0);
-        let child = mgr.create_child(rid, "c1".into(), 100.0, None).unwrap();
-        assert!(mgr.set_reseller(child.id, true).is_err());
-    }
-
-    #[test]
-    fn test_allocatable_and_overallocation_guard() {
-        let mgr = new_manager();
-        let rid = make_reseller(&mgr, 1000.0);
-        assert_eq!(mgr.allocatable_credits(rid), Some(1000.0));
-
-        mgr.create_child(rid, "c1".into(), 600.0, None).unwrap();
-        assert_eq!(mgr.allocatable_credits(rid), Some(400.0));
-
-        // 超额分配被拒绝
-        assert!(mgr.create_child(rid, "c2".into(), 500.0, None).is_err());
-        // 刚好在余额内可以
-        let c2 = mgr.create_child(rid, "c2".into(), 400.0, None).unwrap();
-        assert_eq!(mgr.allocatable_credits(rid), Some(0.0));
-        assert_eq!(c2.parent_key_id, Some(rid));
+        let pid = make_parent(&mgr, 1000.0);
+        // 父卡自己已花 600，剩 400 可分
+        assert!(mgr.create_child(pid, 600.0, "c1".into(), 500.0, None).is_err());
+        // 分 400 正好
+        assert!(mgr.create_child(pid, 600.0, "c1".into(), 400.0, None).is_ok());
+        // 池子已满：再分任何额度都失败
+        assert!(mgr.create_child(pid, 600.0, "c2".into(), 1.0, None).is_err());
     }
 
     #[test]
     fn test_child_inherits_binding() {
         let mgr = new_manager();
-        // reseller 绑定账号 [4]
         let k = mgr
-            .create("r".into(), None, None, Some(500.0), None, Some(vec![4]))
+            .create("p".into(), None, None, Some(500.0), None, Some(vec![4]))
             .unwrap();
-        mgr.set_reseller(k.id, true).unwrap();
-        let child = mgr.create_child(k.id, "c".into(), 100.0, None).unwrap();
+        let child = mgr.create_child(k.id, 0.0, "c".into(), 100.0, None).unwrap();
         assert_eq!(child.bound_credential_ids, Some(vec![4]));
     }
 
     #[test]
     fn test_delete_child_commits_spent_and_frees_remainder() {
         let mgr = new_manager();
-        let rid = make_reseller(&mgr, 1000.0);
-        let child = mgr.create_child(rid, "c1".into(), 600.0, None).unwrap();
-        assert_eq!(mgr.allocatable_credits(rid), Some(400.0));
+        let pid = make_parent(&mgr, 1000.0);
+        let child = mgr.create_child(pid, 0.0, "c1".into(), 600.0, None).unwrap();
+        assert_eq!(mgr.allocatable_credits(pid, 0.0), Some(400.0));
 
-        // 子卡密消耗了 250 credits，删除时结算
-        mgr.delete_child_committing(child.id, 250.0, Some(rid))
-            .unwrap();
-        // 已分配的 600 释放，但 250 计入 committed => 可分配 1000 - 0 - 250 = 750
-        assert_eq!(mgr.allocatable_credits(rid), Some(750.0));
-        assert_eq!(mgr.get(rid).unwrap().committed_credits, 250.0);
+        // 子卡消耗 250，删除时结算
+        mgr.delete_child_committing(child.id, 250.0, Some(pid)).unwrap();
+        // 600 预留释放，250 计入 committed => 可分配 1000 - 0 - 250 = 750
+        assert_eq!(mgr.allocatable_credits(pid, 0.0), Some(750.0));
+        assert_eq!(mgr.get(pid).unwrap().committed_credits, 250.0);
+    }
+
+    #[test]
+    fn test_parent_effective_limit_via_reserved() {
+        // 验证 authenticate 返回的 reserved_credits 正确（父卡自己可用 = limit - reserved）
+        let mgr = new_manager();
+        let pid = make_parent(&mgr, 1000.0);
+        let parent = mgr.get(pid).unwrap();
+        // 开 300 子卡 + 删一个花了 100 的子卡
+        mgr.create_child(pid, 0.0, "c1".into(), 300.0, None).unwrap();
+        let c2 = mgr.create_child(pid, 0.0, "c2".into(), 200.0, None).unwrap();
+        mgr.delete_child_committing(c2.id, 100.0, Some(pid)).unwrap();
+        // reserved = 300(存活子卡) + 100(committed) = 400 => 父卡自己可用到 600
+        let keys = mgr.keys.read();
+        let p = keys.iter().find(|k| k.id == pid).unwrap();
+        assert_eq!(reserved_credits_for(&keys, p), 400.0);
+        drop(keys);
+        let _ = parent;
     }
 
     #[test]
     fn test_update_child_ownership_and_spent_floor() {
         let mgr = new_manager();
-        let rid1 = make_reseller(&mgr, 1000.0);
-        let rid2 = make_reseller(&mgr, 1000.0);
-        let child = mgr.create_child(rid1, "c1".into(), 500.0, None).unwrap();
+        let pid1 = make_parent(&mgr, 1000.0);
+        let pid2 = make_parent(&mgr, 1000.0);
+        let child = mgr.create_child(pid1, 0.0, "c1".into(), 500.0, None).unwrap();
 
-        // 另一个分销商无权修改
+        // 另一个父卡无权修改
         assert!(
-            mgr.update_child(rid2, child.id, None, None, Some(300.0), 0.0)
+            mgr.update_child(pid2, 0.0, child.id, None, None, Some(300.0), 0.0)
                 .is_err()
         );
         // 新额度不能低于已消耗
         assert!(
-            mgr.update_child(rid1, child.id, None, None, Some(100.0), 200.0)
+            mgr.update_child(pid1, 0.0, child.id, None, None, Some(100.0), 200.0)
                 .is_err()
         );
         // 合法下调
         let updated = mgr
-            .update_child(rid1, child.id, None, None, Some(300.0), 100.0)
+            .update_child(pid1, 0.0, child.id, None, None, Some(300.0), 100.0)
             .unwrap()
             .unwrap();
         assert_eq!(updated.credit_limit, Some(300.0));
-        assert_eq!(mgr.allocatable_credits(rid1), Some(700.0));
+        assert_eq!(mgr.allocatable_credits(pid1, 0.0), Some(700.0));
     }
 
     #[test]
-    fn test_update_child_increase_capped_by_allocatable() {
+    fn test_update_child_increase_capped_by_shared_pool() {
         let mgr = new_manager();
-        let rid = make_reseller(&mgr, 1000.0);
-        let child = mgr.create_child(rid, "c1".into(), 600.0, None).unwrap();
-        // 已分配 600，可分配 400；把 child 上调到 1200 需要新增 600 > 400 => 拒绝
+        let pid = make_parent(&mgr, 1000.0);
+        let child = mgr.create_child(pid, 0.0, "c1".into(), 600.0, None).unwrap();
+        // 父卡自己已花 100；已分配 600 => 可分配 300。上调到 1000 需新增 400 > 300 拒绝
         assert!(
-            mgr.update_child(rid, child.id, None, None, Some(1200.0), 0.0)
+            mgr.update_child(pid, 100.0, child.id, None, None, Some(1000.0), 0.0)
                 .is_err()
         );
-        // 上调到 1000 需要新增 400，正好可以
+        // 上调到 900 需新增 300，正好
         assert!(
-            mgr.update_child(rid, child.id, None, None, Some(1000.0), 0.0)
+            mgr.update_child(pid, 100.0, child.id, None, None, Some(900.0), 0.0)
                 .is_ok()
         );
     }
 
     #[test]
-    fn test_topup_child_credits_capped() {
+    fn test_topup_child_credits_capped_shared_pool() {
         let mgr = new_manager();
-        let rid = make_reseller(&mgr, 1000.0);
-        let child = mgr.create_child(rid, "c1".into(), 600.0, None).unwrap();
-        // 可分配 400，充 500 被拒
-        assert!(
-            mgr.topup_child(rid, child.id, Some(500.0), None)
-                .is_err()
-        );
-        // 充 400 可以
+        let pid = make_parent(&mgr, 1000.0);
+        let child = mgr.create_child(pid, 0.0, "c1".into(), 600.0, None).unwrap();
+        // 父卡自花 200 => 可分配 200。充 300 被拒
+        assert!(mgr.topup_child(pid, 200.0, child.id, Some(300.0), None).is_err());
+        // 充 200 可以
         let updated = mgr
-            .topup_child(rid, child.id, Some(400.0), None)
+            .topup_child(pid, 200.0, child.id, Some(200.0), None)
             .unwrap()
             .unwrap();
-        assert_eq!(updated.credit_limit, Some(1000.0));
-        assert_eq!(mgr.allocatable_credits(rid), Some(0.0));
+        assert_eq!(updated.credit_limit, Some(800.0));
     }
 
     #[test]
     fn test_child_expiry_capped_to_parent() {
         let mgr = new_manager();
-        // 父卡密 10 天后到期
         let parent_exp = Utc::now() + chrono::Duration::days(10);
         let k = mgr
-            .create("r".into(), Some(parent_exp), None, Some(1000.0), None, None)
+            .create("p".into(), Some(parent_exp), None, Some(1000.0), None, None)
             .unwrap();
-        mgr.set_reseller(k.id, true).unwrap();
-        // 子卡密要 100 天，应被封顶到父卡密到期时间
-        let child = mgr
-            .create_child(k.id, "c".into(), 100.0, Some(100.0))
-            .unwrap();
+        let child = mgr.create_child(k.id, 0.0, "c".into(), 100.0, Some(100.0)).unwrap();
         let child_exp = child.expires_at.unwrap();
         assert!(child_exp <= parent_exp);
-        // 允许 1 秒误差
         assert!((child_exp - parent_exp).num_seconds().abs() <= 1);
     }
 
     #[test]
-    fn test_delete_reseller_cascade() {
+    fn test_delete_with_children_cascade() {
         let mgr = new_manager();
-        let rid = make_reseller(&mgr, 1000.0);
-        mgr.create_child(rid, "c1".into(), 100.0, None).unwrap();
-        mgr.create_child(rid, "c2".into(), 100.0, None).unwrap();
-        assert_eq!(mgr.list_children(rid).len(), 2);
-        mgr.delete_reseller_cascade(rid).unwrap();
-        assert_eq!(mgr.list_children(rid).len(), 0);
-        assert!(mgr.get(rid).is_none());
+        let pid = make_parent(&mgr, 1000.0);
+        mgr.create_child(pid, 0.0, "c1".into(), 100.0, None).unwrap();
+        mgr.create_child(pid, 0.0, "c2".into(), 100.0, None).unwrap();
+        assert_eq!(mgr.list_children(pid).len(), 2);
+        mgr.delete_with_children(pid).unwrap();
+        assert_eq!(mgr.list_children(pid).len(), 0);
+        assert!(mgr.get(pid).is_none());
     }
 
     #[test]
     fn test_cascade_disable_children() {
         let mgr = new_manager();
-        let rid = make_reseller(&mgr, 1000.0);
-        let c1 = mgr.create_child(rid, "c1".into(), 100.0, None).unwrap();
-        mgr.set_children_disabled(rid, true).unwrap();
+        let pid = make_parent(&mgr, 1000.0);
+        let c1 = mgr.create_child(pid, 0.0, "c1".into(), 100.0, None).unwrap();
+        mgr.set_children_disabled(pid, true).unwrap();
         assert!(!mgr.get(c1.id).unwrap().enabled);
-        mgr.set_children_disabled(rid, false).unwrap();
+        mgr.set_children_disabled(pid, false).unwrap();
         assert!(mgr.get(c1.id).unwrap().enabled);
+    }
+
+    #[test]
+    fn test_child_cannot_open_subkeys() {
+        let mgr = new_manager();
+        let pid = make_parent(&mgr, 1000.0);
+        let child = mgr.create_child(pid, 0.0, "c1".into(), 500.0, None).unwrap();
+        // 子卡密不能再开子卡（单层）
+        assert!(mgr.create_child(child.id, 0.0, "gc".into(), 100.0, None).is_err());
     }
 }

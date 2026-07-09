@@ -87,7 +87,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
             {getStatusBadge()}
           </div>
           <div className="flex items-center gap-2">
-            {data?.isReseller && (
+            {data?.canManageSubKeys && (
               <Button
                 variant="ghost"
                 size="sm"

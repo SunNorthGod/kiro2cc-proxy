@@ -320,13 +320,7 @@ pub struct TopUpApiKeyRequest {
     pub add_credits: Option<f64>,
 }
 
-/// 设置/取消分销卡密身份请求
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SetResellerRequest {
-    /// true 设为分销卡密，false 取消
-    pub is_reseller: bool,
-}
+
 
 /// 区分 JSON 中"字段缺失"与"字段为 null"
 /// 缺失 → None（不更新），null → Some(None)（永不过期），有值 → Some(Some(dt))
