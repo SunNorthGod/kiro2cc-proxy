@@ -54,6 +54,16 @@ pub struct Model {
     pub context_window: i32,
     /// 模型描述（对齐 Kiro 官方列表文案）。
     pub description: String,
+    /// 该模型支持的 effort 档位（对齐 Kiro 官方 ListAvailableModels）。
+    /// 不支持思考档位的模型（如 sonnet-4.5/haiku/minimax）此字段为空并省略。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub effort_levels: Vec<String>,
+    /// effort schema 路径：`output_config` 或 `reasoning`。无 effort 时省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort_schema_path: Option<String>,
+    /// 默认 effort 档位。无 effort 时省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_effort_level: Option<String>,
 }
 
 /// 模型列表响应

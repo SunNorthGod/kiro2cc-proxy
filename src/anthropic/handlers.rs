@@ -171,15 +171,186 @@ fn parse_messages_request(body: &[u8]) -> Result<MessagesRequest, Response> {
     }
 }
 
+/// 动态模型列表缓存 TTL：命中后 6 小时内不再回源 Kiro 后端。
+const MODEL_LIST_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// 进程级动态模型列表缓存（成功从 Kiro 后端拉取一次后缓存）。
+/// 结构：(拉取时刻, 转换后的对外模型列表)。为空表示尚未成功拉取过。
+static MODEL_LIST_CACHE: std::sync::OnceLock<
+    std::sync::Mutex<Option<(Instant, Vec<Model>)>>,
+> = std::sync::OnceLock::new();
+
+fn model_list_cache() -> &'static std::sync::Mutex<Option<(Instant, Vec<Model>)>> {
+    MODEL_LIST_CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// 将 Kiro 后端点分 ID（claude-sonnet-4.5）转换为中转对外的连字符 ID
+/// （claude-sonnet-4-5）。非 claude 系列（minimax/qwen/deepseek/glm 等）保持原样。
+fn kiro_id_to_relay_id(kiro_id: &str) -> String {
+    if kiro_id.starts_with("claude-") {
+        kiro_id.replace('.', "-")
+    } else {
+        kiro_id.to_string()
+    }
+}
+
+/// 根据 Kiro 模型 ID 推断 owned_by 字段（对齐硬编码列表口径）。
+fn owner_for_model(id: &str) -> &'static str {
+    let l = id.to_lowercase();
+    if l == "auto" {
+        "kiro"
+    } else if l.starts_with("claude") {
+        "anthropic"
+    } else if l.starts_with("minimax") {
+        "minimax"
+    } else if l.starts_with("qwen") {
+        "qwen"
+    } else if l.starts_with("deepseek") {
+        "deepseek"
+    } else if l.starts_with("glm") {
+        "zhipu"
+    } else {
+        "kiro"
+    }
+}
+
+/// 把 Kiro 后端返回的模型信息转换为对外 Model 列表。
+/// 缺失字段回退到硬编码列表的等价条目（按 relay id 匹配），再兜底默认值。
+fn convert_kiro_models(
+    resp: &crate::kiro::model::available_models::ListAvailableModelsResponse,
+) -> Vec<Model> {
+    let fallback = build_model_list();
+    let mut out = Vec::new();
+    for m in &resp.models {
+        let Some(kiro_id) = m.model_id.as_deref() else {
+            continue;
+        };
+        let relay_id = kiro_id_to_relay_id(kiro_id);
+        let fb = fallback.iter().find(|f| f.id == relay_id);
+        let (ctx_default, out_default, desc_default, name_default) = match fb {
+            Some(f) => (
+                f.context_window,
+                f.max_tokens,
+                f.description.clone(),
+                f.display_name.clone(),
+            ),
+            None => (200_000, 64000, String::new(), relay_id.clone()),
+        };
+        let context_window = m
+            .token_limits
+            .and_then(|t| t.max_input_tokens)
+            .filter(|v| *v > 0)
+            .unwrap_or(ctx_default);
+        let max_tokens = m
+            .token_limits
+            .and_then(|t| t.max_output_tokens)
+            .filter(|v| *v > 0)
+            .unwrap_or(out_default);
+        let description = m
+            .description
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(desc_default);
+        let display_name = m
+            .model_name
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(name_default);
+        let mut model = mk_model(
+            &relay_id,
+            &display_name,
+            &description,
+            max_tokens,
+            context_window,
+            owner_for_model(&relay_id),
+        );
+        // 透出 Kiro 官方 effort 档位（各模型不一致：sonnet-5/opus-4.8 有 xhigh，
+        // opus-4.6/sonnet-4.6 无 xhigh，sonnet-4.5/haiku/minimax 等无 effort）。
+        if let Some(eff) = m.effort_info() {
+            model.effort_levels = eff.levels;
+            model.effort_schema_path = Some(eff.schema_path);
+            model.default_effort_level = eff.default_level;
+        }
+        out.push(model);
+    }
+    out
+}
+
+/// 解析对外模型列表：优先返回动态缓存 / 回源 Kiro 后端，失败回退硬编码列表。
+///
+/// 流程：命中未过期缓存直接返回；否则用当前可用账号回源一次，成功则转换 + 更新缓存；
+/// 回源失败时，若有旧缓存则沿用旧缓存（stale-while-error），否则用硬编码列表兜底。
+async fn resolve_model_list(state: &AppState) -> Vec<Model> {
+    // 1) 命中未过期缓存
+    {
+        let guard = model_list_cache().lock().unwrap();
+        if let Some((ts, list)) = guard.as_ref() {
+            if ts.elapsed() < MODEL_LIST_CACHE_TTL {
+                return clone_models(list);
+            }
+        }
+    }
+
+    // 2) 回源 Kiro 后端
+    if let Some(provider) = state.kiro_provider.as_ref() {
+        match provider.token_manager().list_available_models().await {
+            Ok(resp) => {
+                let converted = convert_kiro_models(&resp);
+                if !converted.is_empty() {
+                    let mut guard = model_list_cache().lock().unwrap();
+                    *guard = Some((Instant::now(), clone_models(&converted)));
+                    tracing::info!("动态模型列表已刷新，共 {} 个模型", converted.len());
+                    return converted;
+                }
+                tracing::warn!("ListAvailableModels 返回空列表，回退硬编码列表");
+            }
+            Err(e) => {
+                tracing::warn!("ListAvailableModels 拉取失败，回退缓存/硬编码: {}", e);
+            }
+        }
+    }
+
+    // 3) 回源失败：沿用旧缓存（即便过期）
+    {
+        let guard = model_list_cache().lock().unwrap();
+        if let Some((_, list)) = guard.as_ref() {
+            return clone_models(list);
+        }
+    }
+
+    // 4) 最终兜底：硬编码列表
+    build_model_list()
+}
+
+/// Model 不是 Clone（含固定字段），手动复制一份（含 effort 档位字段）。
+fn clone_models(src: &[Model]) -> Vec<Model> {
+    src.iter()
+        .map(|m| {
+            let mut copy = mk_model(
+                &m.id,
+                &m.display_name,
+                &m.description,
+                m.max_tokens,
+                m.context_window,
+                &m.owned_by,
+            );
+            copy.effort_levels = m.effort_levels.clone();
+            copy.effort_schema_path = m.effort_schema_path.clone();
+            copy.default_effort_level = m.default_effort_level.clone();
+            copy
+        })
+        .collect()
+}
+
 /// GET /v1/models
 ///
-/// 返回可用的模型列表
-pub async fn get_models() -> impl IntoResponse {
+/// 返回可用的模型列表（动态对齐 Kiro 后端，失败回退硬编码列表）
+pub async fn get_models(State(state): State<AppState>) -> impl IntoResponse {
     tracing::info!("Received GET /v1/models request");
 
     Json(ModelsResponse {
         object: "list".to_string(),
-        data: build_model_list(),
+        data: resolve_model_list(&state).await,
     })
 }
 
@@ -203,13 +374,20 @@ fn mk_model(
         max_tokens,
         context_window,
         description: description.to_string(),
+        // 硬编码兜底列表默认不带 effort 档位；动态回源时由 convert_kiro_models 按
+        // ListAvailableModels 真实 schema 填充。
+        effort_levels: Vec::new(),
+        effort_schema_path: None,
+        default_effort_level: None,
     }
 }
 
 /// 对外暴露的模型列表，完全对齐 Kiro 官方模型选择器（名称/描述/上下文窗口）。
 /// 每个模型的 credit 倍率由 Kiro 客户端根据模型 ID 自行显示，此处不需要携带。
-/// 上下文窗口对齐 Kiro 官方后端 ListAvailableModels：1M = auto / Opus 4.8·4.7·4.6 / Sonnet 4.6；
-/// 200K = Opus 4.5 / Sonnet 4.5·4 / Haiku；MiniMax=196K；Qwen3-Coder-Next=256K。
+/// 此为硬编码兜底列表：运行时优先动态回源 Kiro 后端 ListAvailableModels（见
+/// resolve_model_list），拉取失败才用此列表。上下文窗口对齐官方（实测 2026-07）：
+/// 1M = auto / Sonnet 5 / Opus 4.8·4.7·4.6 / Sonnet 4.6；200K = Opus 4.5 / Sonnet 4.5·4 /
+/// Haiku 4.5 / GLM 5；deepseek-3.2=164K；MiniMax=196K；Qwen3-Coder-Next=256K。
 fn build_model_list() -> Vec<Model> {
     const M1: i32 = 1_000_000;
     const K200: i32 = 200_000;
@@ -220,9 +398,17 @@ fn build_model_list() -> Vec<Model> {
             "auto",
             "Auto",
             "Models chosen by task for optimal usage and consistent quality",
-            32000,
+            64000,
             M1,
             "kiro",
+        ),
+        mk_model(
+            "claude-sonnet-5",
+            "Claude Sonnet 5",
+            "Experimental preview of Claude Sonnet 5 model with 1M context window",
+            64000,
+            M1,
+            "anthropic",
         ),
         mk_model(
             "claude-opus-4-8",
@@ -244,7 +430,7 @@ fn build_model_list() -> Vec<Model> {
             "claude-opus-4-6",
             "Claude Opus 4.6",
             "Claude Opus 4.6 model with 1M context window",
-            128000,
+            64000,
             M1,
             "anthropic",
         ),
@@ -281,18 +467,26 @@ fn build_model_list() -> Vec<Model> {
             "anthropic",
         ),
         mk_model(
-            "claude-haiku-4-6",
-            "Claude Haiku 4.6",
+            "claude-haiku-4-5",
+            "Claude Haiku 4.5",
             "The latest Claude Haiku model",
             64000,
             K200,
             "anthropic",
         ),
         mk_model(
+            "deepseek-3.2",
+            "Deepseek v3.2",
+            "Deepseek v3.2 model",
+            64000,
+            164_000,
+            "deepseek",
+        ),
+        mk_model(
             "minimax-m2.5",
             "MiniMax M2.5",
             "MiniMax M2.5 model",
-            32000,
+            64000,
             K196,
             "minimax",
         ),
@@ -300,15 +494,23 @@ fn build_model_list() -> Vec<Model> {
             "minimax-m2.1",
             "MiniMax M2.1",
             "Experimental preview of MiniMax M2.1",
-            32000,
+            64000,
             K196,
             "minimax",
+        ),
+        mk_model(
+            "glm-5",
+            "GLM 5",
+            "GLM 5 model",
+            64000,
+            K200,
+            "zhipu",
         ),
         mk_model(
             "qwen3-coder-next",
             "Qwen3 Coder Next",
             "Experimental preview of Qwen3 Coder Next",
-            32000,
+            64000,
             K256,
             "qwen",
         ),
@@ -318,11 +520,14 @@ fn build_model_list() -> Vec<Model> {
 /// GET /v1/models/:model_id
 ///
 /// 返回指定模型的信息
-pub async fn get_model(axum::extract::Path(model_id): axum::extract::Path<String>) -> Response {
+pub async fn get_model(
+    State(state): State<AppState>,
+    axum::extract::Path(model_id): axum::extract::Path<String>,
+) -> Response {
     tracing::info!(model_id = %model_id, "Received GET /v1/models/:model_id request");
 
-    // 复用 get_models 的模型列表，查找匹配的模型
-    let models = build_model_list();
+    // 复用动态模型列表（含硬编码兜底），查找匹配的模型
+    let models = resolve_model_list(&state).await;
     if let Some(model) = models.into_iter().find(|m| m.id == model_id) {
         Json(model).into_response()
     } else {
@@ -1593,20 +1798,24 @@ mod tests {
 
     #[test]
     fn test_context_windows_aligned_to_official() {
-        // 1M 窗口（对齐 Kiro 官方 ListAvailableModels）：auto、Opus 4.8 / 4.7 / 4.6、Sonnet 4.6
+        // 1M 窗口（对齐 Kiro 官方 ListAvailableModels，实测 2026-07）：
+        // auto、Sonnet 5、Opus 4.8 / 4.7 / 4.6、Sonnet 4.6
         assert_eq!(find_by_id("auto").unwrap().context_window, 1_000_000);
+        assert_eq!(find_by_id("claude-sonnet-5").unwrap().context_window, 1_000_000);
         assert_eq!(find_by_id("claude-opus-4-8").unwrap().context_window, 1_000_000);
         assert_eq!(find_by_id("claude-opus-4-7").unwrap().context_window, 1_000_000);
         assert_eq!(find_by_id("claude-opus-4-6").unwrap().context_window, 1_000_000);
         assert_eq!(find_by_id("claude-sonnet-4-6").unwrap().context_window, 1_000_000);
-        // 200K 窗口：Opus 4.5、Sonnet 4.5 / 4、Haiku
+        // 200K 窗口：Opus 4.5、Sonnet 4.5 / 4、Haiku 4.5、GLM 5
         assert_eq!(find_by_id("claude-opus-4-5").unwrap().context_window, 200_000);
         assert_eq!(find_by_id("claude-sonnet-4-5").unwrap().context_window, 200_000);
         assert_eq!(find_by_id("claude-sonnet-4").unwrap().context_window, 200_000);
-        assert_eq!(find_by_id("claude-haiku-4-6").unwrap().context_window, 200_000);
+        assert_eq!(find_by_id("claude-haiku-4-5").unwrap().context_window, 200_000);
+        assert_eq!(find_by_id("glm-5").unwrap().context_window, 200_000);
         // 特殊窗口
         assert_eq!(find_by_id("qwen3-coder-next").unwrap().context_window, 256_000);
         assert_eq!(find_by_id("minimax-m2.5").unwrap().context_window, 196_000);
+        assert_eq!(find_by_id("deepseek-3.2").unwrap().context_window, 164_000);
     }
 
     #[test]
@@ -1630,6 +1839,7 @@ mod tests {
         let ids: Vec<String> = build_model_list().into_iter().map(|m| m.id).collect();
         for expected in [
             "auto",
+            "claude-sonnet-5",
             "claude-opus-4-8",
             "claude-opus-4-7",
             "claude-opus-4-6",
@@ -1637,9 +1847,11 @@ mod tests {
             "claude-opus-4-5",
             "claude-sonnet-4-5",
             "claude-sonnet-4",
-            "claude-haiku-4-6",
+            "claude-haiku-4-5",
+            "deepseek-3.2",
             "minimax-m2.5",
             "minimax-m2.1",
+            "glm-5",
             "qwen3-coder-next",
         ] {
             assert!(ids.contains(&expected.to_string()), "missing {}", expected);
@@ -1650,8 +1862,26 @@ mod tests {
 
     #[test]
     fn test_opus_max_tokens() {
+        // 实测 2026-07：opus 4.8 / 4.7 = 128K 输出；opus 4.6 = 64K 输出
         assert_eq!(find_by_id("claude-opus-4-8").unwrap().max_tokens, 128000);
         assert_eq!(find_by_id("claude-opus-4-7").unwrap().max_tokens, 128000);
-        assert_eq!(find_by_id("claude-opus-4-6").unwrap().max_tokens, 128000);
+        assert_eq!(find_by_id("claude-opus-4-6").unwrap().max_tokens, 64000);
+    }
+
+    #[test]
+    fn test_sonnet_5_present() {
+        let m = find_by_id("claude-sonnet-5").unwrap();
+        assert_eq!(m.context_window, 1_000_000);
+        assert_eq!(m.max_tokens, 64000);
+        assert_eq!(m.owned_by, "anthropic");
+    }
+
+    #[test]
+    fn test_kiro_id_to_relay_id() {
+        assert_eq!(kiro_id_to_relay_id("claude-sonnet-4.5"), "claude-sonnet-4-5");
+        assert_eq!(kiro_id_to_relay_id("claude-sonnet-5"), "claude-sonnet-5");
+        assert_eq!(kiro_id_to_relay_id("minimax-m2.5"), "minimax-m2.5");
+        assert_eq!(kiro_id_to_relay_id("deepseek-3.2"), "deepseek-3.2");
+        assert_eq!(kiro_id_to_relay_id("auto"), "auto");
     }
 }

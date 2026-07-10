@@ -23,6 +23,7 @@ use crate::kiro::model::token_refresh::{
     ExternalIdpRefreshResponse, IdcRefreshRequest, IdcRefreshResponse, RefreshRequest,
     RefreshResponse,
 };
+use crate::kiro::model::available_models::ListAvailableModelsResponse;
 use crate::kiro::model::usage_limits::UsageLimitsResponse;
 use crate::model::config::Config;
 
@@ -537,6 +538,111 @@ pub(crate) async fn get_usage_limits(
 
     let data: UsageLimitsResponse = response.json().await?;
     Ok(data)
+}
+
+/// 调用 Kiro 后端 ListAvailableModels 获取该账号可见的模型列表。
+///
+/// 端点（实测）：`GET https://{host}/ListAvailableModels?origin=AI_EDITOR&profileArn=...`，
+/// external_idp（企业版）走 `management.{region}.kiro.dev`，其余走 `q.{region}.amazonaws.com`。
+/// 必须用 GET（POST 返回 400 UnknownOperationException）。header 与 getUsageLimits 一致。
+/// 返回单页结果；若后端启用分页（next_token 非空），循环拉取并合并，最多 10 页封顶。
+pub(crate) async fn list_available_models(
+    credentials: &KiroCredentials,
+    config: &Config,
+    token: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<ListAvailableModelsResponse> {
+    tracing::debug!("正在获取可用模型列表...");
+
+    let region = credentials.effective_api_region(config);
+    let is_ext = credentials.is_external_idp();
+    let host = if is_ext {
+        format!("management.{}.kiro.dev", region)
+    } else {
+        format!("q.{}.amazonaws.com", region)
+    };
+    let machine_id = machine_id::generate_from_credentials(credentials, config)
+        .ok_or_else(|| anyhow::anyhow!("无法生成 machineId"))?;
+    let kiro_version = &config.kiro_version;
+
+    let user_agent = format!(
+        "aws-sdk-js/1.0.0 ua/2.1 os/darwin#24.6.0 lang/js md/nodejs#22.21.1 \
+         api/codewhispererruntime#1.0.0 m/N,E KiroIDE-{}-{}",
+        kiro_version, machine_id
+    );
+    let amz_user_agent = format!(
+        "{} KiroIDE-{}-{}",
+        USAGE_LIMITS_AMZ_USER_AGENT_PREFIX, kiro_version, machine_id
+    );
+
+    let client = build_client(proxy, 30, config.tls_backend)?;
+
+    // 分页拉取（实测单页返回，但仍按协议兜底最多 10 页）
+    const MAX_PAGES: usize = 10;
+    let mut merged = ListAvailableModelsResponse {
+        models: Vec::new(),
+        default_model: None,
+        next_token: None,
+    };
+    let mut next_token: Option<String> = None;
+
+    for page in 0..MAX_PAGES {
+        let mut url = format!(
+            "https://{}/ListAvailableModels?origin=AI_EDITOR",
+            host
+        );
+        if let Some(profile_arn) = &credentials.profile_arn {
+            url.push_str(&format!("&profileArn={}", urlencoding::encode(profile_arn)));
+        }
+        if let Some(tok) = &next_token {
+            url.push_str(&format!("&nextToken={}", urlencoding::encode(tok)));
+        }
+
+        let mut req = client
+            .get(&url)
+            .header("x-amz-user-agent", &amz_user_agent)
+            .header("User-Agent", &user_agent)
+            .header("host", &host)
+            .header("amz-sdk-invocation-id", uuid::Uuid::new_v4().to_string())
+            .header("amz-sdk-request", "attempt=1; max=1")
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Connection", "close");
+        if is_ext {
+            req = req.header("TokenType", "EXTERNAL_IDP");
+        }
+        let response = req.send().await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.unwrap_or_default();
+            let error_msg = match status.as_u16() {
+                401 => "认证失败，Token 无效或已过期",
+                403 => "权限不足，无法获取模型列表",
+                429 => "请求过于频繁，已被限流",
+                500..=599 => "服务器错误，Kiro 服务暂时不可用",
+                _ => "获取模型列表失败",
+            };
+            bail!("{}: {} {}", error_msg, status, body_text);
+        }
+
+        let page_data: ListAvailableModelsResponse = response.json().await?;
+        merged.models.extend(page_data.models);
+        if merged.default_model.is_none() {
+            merged.default_model = page_data.default_model;
+        }
+        match page_data.next_token {
+            Some(tok) if !tok.is_empty() => {
+                if page + 1 >= MAX_PAGES {
+                    tracing::warn!("ListAvailableModels 分页达上限 {}，停止拉取", MAX_PAGES);
+                    break;
+                }
+                next_token = Some(tok);
+            }
+            _ => break,
+        }
+    }
+
+    Ok(merged)
 }
 
 /// 调用 ListAvailableProfiles 获取账号在指定区域的 profileArn（Enterprise/IdC 账号必需）。
@@ -2253,6 +2359,26 @@ impl MultiTokenManager {
         let effective_proxy = ctx.credentials.effective_proxy(self.proxy.as_ref());
         get_usage_limits(
             &ctx.credentials,
+            &self.config,
+            &ctx.token,
+            effective_proxy.as_ref(),
+        )
+        .await
+    }
+
+    /// 获取 Kiro 后端可用模型列表（用于动态填充 /v1/models 与上下文窗口）。
+    /// 复用当前可用账号的 token；企业版账号会自动补齐 profileArn。
+    pub async fn list_available_models(
+        &self,
+    ) -> anyhow::Result<ListAvailableModelsResponse> {
+        let ctx = self.acquire_context(None).await?;
+        let mut credentials = ctx.credentials.clone();
+        // 自愈：企业版 IdC 账号缺少 profileArn 时先补齐，否则可能 400
+        self.ensure_profile_arn(ctx.id, &mut credentials, &ctx.token)
+            .await;
+        let effective_proxy = credentials.effective_proxy(self.proxy.as_ref());
+        list_available_models(
+            &credentials,
             &self.config,
             &ctx.token,
             effective_proxy.as_ref(),

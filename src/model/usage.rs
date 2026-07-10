@@ -113,8 +113,9 @@ fn get_model_pricing(model: &str) -> ModelPricing {
             output_per_mtok: 5.0,
         }
     } else {
-        // Sonnet 4 / sonnet-5 兜底 $3 / $15
-        // TODO(sonnet-5): sonnet-5 上线后需实测定价并添加专属分支
+        // Sonnet 系列（含 sonnet-4 / 4.5 / 4.6 / 5）统一 $3 / $15。
+        // Anthropic Sonnet 各版本 token 定价一致；sonnet-5 的 credit 溢价通过
+        // rateMultiplier=1.3 体现，已反映在 get_k_ref 的换算率中（见下）。
         ModelPricing {
             input_per_mtok: 3.0,
             output_per_mtok: 15.0,
@@ -142,8 +143,11 @@ fn get_k_ref(model: &str) -> f64 {
         // 未知 opus / fable 兜底沿用最新档
         2.36
     } else {
-        // sonnet 系列（默认）；haiku / sonnet-5 暂沿用此值作兜底
-        // TODO(sonnet-5): sonnet-5 上线后需实测 k_ref 并添加专属分支
+        // sonnet 系列（默认）/ haiku / sonnet-5 共用此兜底换算率。
+        // 注：sonnet-5 已在 Kiro 后端上线（rateMultiplier=1.3），但 k_ref 仅用于
+        // 「meteringEvent 缺失时」的 credits 兜底估算——正常计费直接取官方 metering，
+        // 已含 1.3x 溢价，故此处无需为 sonnet-5 单列常量；如需精确可待有真实
+        // metering 样本后按实测反推校准。
         1.43
     }
 }
