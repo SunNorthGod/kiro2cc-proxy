@@ -690,12 +690,17 @@ pub async fn post_messages(
         payload.tools,
     ) as i32;
 
-    // 检查是否启用了thinking
+    // 检查是否启用了thinking。
+    // 两种信号任一命中即视为启用（决定是否把 Kiro 的 reasoningContentEvent 透给客户端）：
+    //   1) Anthropic 标准 thinking 字段（opencode / Claude Code 走这条）；
+    //   2) Kiro 原生 output_config.effort（api2kiro 插件透传，只发 effort 不发 thinking）。
+    // 若只看 thinking 字段，插件请求会被判为未启用 → 思考内容被丢弃（表现为"中间不返回思考、感觉变慢"）。
     let thinking_enabled = payload
         .thinking
         .as_ref()
         .map(|t| t.is_enabled())
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || payload.output_config.is_some();
 
     // 提取用量追踪信息
     let api_key_id = identity.map(|ext| ext.0.id);
@@ -1550,12 +1555,17 @@ pub async fn post_messages_cc(
         payload.tools,
     ) as i32;
 
-    // 检查是否启用了thinking
+    // 检查是否启用了thinking。
+    // 两种信号任一命中即视为启用（决定是否把 Kiro 的 reasoningContentEvent 透给客户端）：
+    //   1) Anthropic 标准 thinking 字段（opencode / Claude Code 走这条）；
+    //   2) Kiro 原生 output_config.effort（api2kiro 插件透传，只发 effort 不发 thinking）。
+    // 若只看 thinking 字段，插件请求会被判为未启用 → 思考内容被丢弃（表现为"中间不返回思考、感觉变慢"）。
     let thinking_enabled = payload
         .thinking
         .as_ref()
         .map(|t| t.is_enabled())
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || payload.output_config.is_some();
 
     // 提取用量追踪信息
     let api_key_id = identity.map(|ext| ext.0.id);
