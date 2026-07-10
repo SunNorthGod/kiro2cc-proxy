@@ -1634,6 +1634,9 @@ fn convert_assistant_message(
 ) -> Result<HistoryAssistantMessage, ConversionError> {
     let mut text_content = String::new();
     let mut tool_uses = Vec::new();
+    // 历史里带签名的推理（延续工具循环思考）。只取带签名的第一个 thinking 块。
+    let mut reasoning_text: Option<String> = None;
+    let mut reasoning_signature: Option<String> = None;
 
     match &msg.content {
         serde_json::Value::String(s) => {
@@ -1643,10 +1646,19 @@ fn convert_assistant_message(
             for item in arr {
                 if let Ok(block) = serde_json::from_value::<ContentBlock>(item.clone()) {
                     match block.block_type.as_str() {
-                        // 历史消息中剥离 thinking 内容：thinking 仅对当轮推理有意义，
-                        // 保留在 history 中会导致 payload 膨胀（Opus 每轮可产生数万字符），
-                        // 触发 Kiro 400 "Improperly formed request"。
-                        "thinking" => {}
+                        // 历史 thinking 块：仅当带签名时保留并回传（转成 Kiro reasoningContent），
+                        // 让后端在工具循环中延续思考——这是"直连能思考、插件不思考"的根因修复。
+                        // 无签名的 thinking 后端会 400 拒绝，故只在有签名时保留。
+                        "thinking" => {
+                            if reasoning_text.is_none()
+                                && let (Some(t), Some(sig)) = (&block.thinking, &block.signature)
+                                && !t.is_empty()
+                                && !sig.is_empty()
+                            {
+                                reasoning_text = Some(t.clone());
+                                reasoning_signature = Some(sig.clone());
+                            }
+                        }
                         "text" => {
                             if let Some(text) = block.text {
                                 text_content.push_str(&text);
@@ -1710,9 +1722,14 @@ fn convert_assistant_message(
         message_id: Some(message_id),
         content: final_content,
         tool_uses: None,
+        reasoning_content: None,
+        reasoning_signature: None,
     };
     if !tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(tool_uses);
+    }
+    if let (Some(t), Some(sig)) = (reasoning_text, reasoning_signature) {
+        assistant = assistant.with_reasoning(t, sig);
     }
 
     Ok(HistoryAssistantMessage {
@@ -1732,6 +1749,7 @@ fn merge_assistant_messages(
 
     let mut all_tool_uses: Vec<ToolUseEntry> = Vec::new();
     let mut content_parts: Vec<String> = Vec::new();
+    let mut merged_reasoning: Option<(String, String)> = None;
 
     for msg in messages {
         let converted = convert_assistant_message(msg)?;
@@ -1741,6 +1759,12 @@ fn merge_assistant_messages(
         }
         if let Some(tus) = am.tool_uses {
             all_tool_uses.extend(tus);
+        }
+        // 保留首个带签名的推理（合并后的 assistant 消息只带一份 reasoning）
+        if merged_reasoning.is_none()
+            && let (Some(t), Some(sig)) = (am.reasoning_content, am.reasoning_signature)
+        {
+            merged_reasoning = Some((t, sig));
         }
     }
 
@@ -1783,9 +1807,14 @@ fn merge_assistant_messages(
         message_id: Some(message_id),
         content,
         tool_uses: None,
+        reasoning_content: None,
+        reasoning_signature: None,
     };
     if !all_tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(all_tool_uses);
+    }
+    if let Some((t, sig)) = merged_reasoning {
+        assistant = assistant.with_reasoning(t, sig);
     }
     Ok(HistoryAssistantMessage {
         assistant_response_message: assistant,
@@ -3064,5 +3093,68 @@ mod tests {
             map_model("claude-opus-4-6"),
             Some("claude-opus-4.6".to_string())
         );
+    }
+
+    #[test]
+    fn test_convert_assistant_preserves_signed_thinking() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // 带签名的 thinking 块 → 转成 Kiro reasoningContent + reasoningSignature，延续工具循环思考
+        let msg = AnthropicMessage {
+            role: "assistant".to_string(),
+            content: serde_json::json!([
+                {"type": "thinking", "thinking": "Let me analyze the failure.", "signature": "sig-abc-123"},
+                {"type": "text", "text": "I'll run the test."},
+                {"type": "tool_use", "id": "toolu_1", "name": "run_cmd", "input": {"cmd": "cargo test"}}
+            ]),
+        };
+
+        let result = convert_assistant_message(&msg).unwrap();
+        let arm = result.assistant_response_message;
+        assert_eq!(
+            arm.reasoning_content.as_deref(),
+            Some("Let me analyze the failure."),
+            "带签名的 thinking 应保留为 reasoning_content"
+        );
+        assert_eq!(
+            arm.reasoning_signature.as_deref(),
+            Some("sig-abc-123"),
+            "签名应保留"
+        );
+        assert_eq!(arm.content, "I'll run the test.");
+        assert!(arm.tool_uses.is_some());
+    }
+
+    #[test]
+    fn test_convert_assistant_drops_unsigned_thinking() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // 无签名的 thinking 块 → 丢弃（后端会 400 拒绝无签名 thinking）
+        let msg = AnthropicMessage {
+            role: "assistant".to_string(),
+            content: serde_json::json!([
+                {"type": "thinking", "thinking": "unsigned reasoning"},
+                {"type": "text", "text": "answer"}
+            ]),
+        };
+
+        let result = convert_assistant_message(&msg).unwrap();
+        let arm = result.assistant_response_message;
+        assert!(
+            arm.reasoning_content.is_none(),
+            "无签名的 thinking 不应保留"
+        );
+        assert!(arm.reasoning_signature.is_none());
+        assert_eq!(arm.content, "answer");
+    }
+
+    #[test]
+    fn test_signed_thinking_serializes_to_kiro_wire() {
+        // reasoningContent + reasoningSignature 应出现在序列化后的 wire JSON 中
+        let assistant = AssistantMessage::new("done")
+            .with_reasoning("my thinking".to_string(), "my-sig".to_string());
+        let json = serde_json::to_string(&assistant).unwrap();
+        assert!(json.contains("\"reasoningContent\":\"my thinking\""));
+        assert!(json.contains("\"reasoningSignature\":\"my-sig\""));
     }
 }

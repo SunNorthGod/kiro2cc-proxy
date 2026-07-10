@@ -324,6 +324,13 @@ pub struct AssistantMessage {
     /// 工具使用列表
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_uses: Option<Vec<ToolUseEntry>>,
+    /// 历史推理内容（延续工具循环中的思考）。Kiro 发往后端的 wire 格式为扁平字段：
+    /// `reasoningContent`(文本) + `reasoningSignature`(签名)。仅当带签名时才发，
+    /// 无签名的推理后端会拒绝（400），故两者要么都在、要么都省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_signature: Option<String>,
 }
 
 impl AssistantMessage {
@@ -333,12 +340,23 @@ impl AssistantMessage {
             message_id: None,
             content: content.into(),
             tool_uses: None,
+            reasoning_content: None,
+            reasoning_signature: None,
         }
     }
 
     /// 设置工具使用
     pub fn with_tool_uses(mut self, tool_uses: Vec<ToolUseEntry>) -> Self {
         self.tool_uses = Some(tool_uses);
+        self
+    }
+
+    /// 设置带签名的推理内容（延续思考）。text/signature 任一为空则不设置。
+    pub fn with_reasoning(mut self, text: String, signature: String) -> Self {
+        if !text.is_empty() && !signature.is_empty() {
+            self.reasoning_content = Some(text);
+            self.reasoning_signature = Some(signature);
+        }
         self
     }
 }
