@@ -312,6 +312,24 @@ impl HistoryAssistantMessage {
     }
 }
 
+/// 推理内容（Kiro 发往后端的 wire 格式，嵌套结构）。
+/// 实测（直连后端对拍）：generateAssistantResponse 接受的格式是
+/// `reasoningContent: { reasoningText: { text, signature } }`（嵌套），
+/// 而非扁平的 reasoningContent+reasoningSignature（扁平会 400）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningContent {
+    pub reasoning_text: ReasoningText,
+}
+
+/// 推理文本 + 签名
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReasoningText {
+    pub text: String,
+    pub signature: String,
+}
+
 /// 助手消息（历史记录中使用）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -324,13 +342,11 @@ pub struct AssistantMessage {
     /// 工具使用列表
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_uses: Option<Vec<ToolUseEntry>>,
-    /// 历史推理内容（延续工具循环中的思考）。Kiro 发往后端的 wire 格式为扁平字段：
-    /// `reasoningContent`(文本) + `reasoningSignature`(签名)。仅当带签名时才发，
-    /// 无签名的推理后端会拒绝（400），故两者要么都在、要么都省略。
+    /// 历史推理内容（延续工具循环中的思考）。嵌套 wire 格式
+    /// `{ reasoningText: { text, signature } }`。仅当带签名时才发，
+    /// 无签名的推理后端会 400，故要么带完整签名、要么省略。
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_signature: Option<String>,
+    pub reasoning_content: Option<ReasoningContent>,
 }
 
 impl AssistantMessage {
@@ -341,7 +357,6 @@ impl AssistantMessage {
             content: content.into(),
             tool_uses: None,
             reasoning_content: None,
-            reasoning_signature: None,
         }
     }
 
@@ -354,8 +369,9 @@ impl AssistantMessage {
     /// 设置带签名的推理内容（延续思考）。text/signature 任一为空则不设置。
     pub fn with_reasoning(mut self, text: String, signature: String) -> Self {
         if !text.is_empty() && !signature.is_empty() {
-            self.reasoning_content = Some(text);
-            self.reasoning_signature = Some(signature);
+            self.reasoning_content = Some(ReasoningContent {
+                reasoning_text: ReasoningText { text, signature },
+            });
         }
         self
     }

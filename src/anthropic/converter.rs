@@ -1723,7 +1723,6 @@ fn convert_assistant_message(
         content: final_content,
         tool_uses: None,
         reasoning_content: None,
-        reasoning_signature: None,
     };
     if !tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(tool_uses);
@@ -1762,9 +1761,10 @@ fn merge_assistant_messages(
         }
         // 保留首个带签名的推理（合并后的 assistant 消息只带一份 reasoning）
         if merged_reasoning.is_none()
-            && let (Some(t), Some(sig)) = (am.reasoning_content, am.reasoning_signature)
+            && let Some(rc) = am.reasoning_content
         {
-            merged_reasoning = Some((t, sig));
+            let rt = rc.reasoning_text;
+            merged_reasoning = Some((rt.text, rt.signature));
         }
     }
 
@@ -1808,7 +1808,6 @@ fn merge_assistant_messages(
         content,
         tool_uses: None,
         reasoning_content: None,
-        reasoning_signature: None,
     };
     if !all_tool_uses.is_empty() {
         assistant = assistant.with_tool_uses(all_tool_uses);
@@ -3111,16 +3110,15 @@ mod tests {
 
         let result = convert_assistant_message(&msg).unwrap();
         let arm = result.assistant_response_message;
+        let rc = arm
+            .reasoning_content
+            .as_ref()
+            .expect("带签名的 thinking 应保留为 reasoning_content");
         assert_eq!(
-            arm.reasoning_content.as_deref(),
-            Some("Let me analyze the failure."),
-            "带签名的 thinking 应保留为 reasoning_content"
+            rc.reasoning_text.text, "Let me analyze the failure.",
+            "推理文本应保留"
         );
-        assert_eq!(
-            arm.reasoning_signature.as_deref(),
-            Some("sig-abc-123"),
-            "签名应保留"
-        );
+        assert_eq!(rc.reasoning_text.signature, "sig-abc-123", "签名应保留");
         assert_eq!(arm.content, "I'll run the test.");
         assert!(arm.tool_uses.is_some());
     }
@@ -3144,17 +3142,20 @@ mod tests {
             arm.reasoning_content.is_none(),
             "无签名的 thinking 不应保留"
         );
-        assert!(arm.reasoning_signature.is_none());
         assert_eq!(arm.content, "answer");
     }
 
     #[test]
     fn test_signed_thinking_serializes_to_kiro_wire() {
-        // reasoningContent + reasoningSignature 应出现在序列化后的 wire JSON 中
+        // 嵌套 wire 格式：reasoningContent:{reasoningText:{text,signature}}（实测后端接受此格式）
         let assistant = AssistantMessage::new("done")
             .with_reasoning("my thinking".to_string(), "my-sig".to_string());
         let json = serde_json::to_string(&assistant).unwrap();
-        assert!(json.contains("\"reasoningContent\":\"my thinking\""));
-        assert!(json.contains("\"reasoningSignature\":\"my-sig\""));
+        assert!(
+            json.contains(
+                "\"reasoningContent\":{\"reasoningText\":{\"text\":\"my thinking\",\"signature\":\"my-sig\"}}"
+            ),
+            "应序列化为嵌套 wire 格式，实际: {json}"
+        );
     }
 }
