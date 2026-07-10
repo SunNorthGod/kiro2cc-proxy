@@ -1357,14 +1357,20 @@ fn model_max_output_tokens(model: &str) -> i32 {
 fn build_additional_model_request_fields(req: &MessagesRequest) -> Option<serde_json::Value> {
     let mut fields = serde_json::Map::new();
 
+    // 关键：绝不向后端注入 thinking:{type:"adaptive"}。
+    // 实测（2026-07 直连 Kiro 后端对拍）：在工具续跑轮携带 thinking:adaptive 会**抑制**推理
+    // （reasoningContentEvent 从 55 掉到 1），而只发 output_config.effort 时推理正常爆发。
+    // 原生 Kiro 客户端也从不发 thinking 字段，只发 output_config.effort，思考深度由模型按
+    // effort 自适应。因此这里对齐原生：默认不发 thinking。
+    // 唯一例外：客户端**显式**要求关闭思考（thinking.type=="disabled"）时，透传 disabled，
+    // 以支持"一键关思考"的省钱/提速场景。
     if let Some(t) = &req.thinking {
-        let mut thinking_obj = serde_json::Map::new();
-        if t.thinking_type == "enabled" || t.thinking_type == "adaptive" {
-            thinking_obj.insert("type".into(), serde_json::json!("adaptive"));
-        } else {
-            thinking_obj.insert("type".into(), serde_json::json!("disabled"));
+        if t.thinking_type == "disabled" {
+            fields.insert(
+                "thinking".into(),
+                serde_json::json!({ "type": "disabled" }),
+            );
         }
-        fields.insert("thinking".into(), serde_json::Value::Object(thinking_obj));
     }
 
     let effort = req
