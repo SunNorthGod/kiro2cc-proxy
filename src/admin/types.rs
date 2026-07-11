@@ -250,7 +250,7 @@ pub struct BalanceResponse {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadBalancingModeResponse {
-    /// 当前模式（"priority" 或 "balanced"）
+    /// 当前模式（"priority" / "balanced" / "auto"）
     pub mode: String,
 }
 

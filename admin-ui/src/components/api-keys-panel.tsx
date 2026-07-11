@@ -43,7 +43,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
   const [copiedId, setCopiedId] = useState<number | null>(null)
   const [copiedMaster, setCopiedMaster] = useState(false)
   const [copiedUrl, setCopiedUrl] = useState(false)
-  const [sortBy, setSortBy] = useState<'newest' | 'cost-desc' | 'cost-asc' | 'rpm-desc'>('newest')
+  const [sortBy, setSortBy] = useState<'newest' | 'cost-desc' | 'cost-asc' | 'rpm-desc' | 'rpm-asc'>('newest')
   const [searchQuery, setSearchQuery] = useState('')
   const [purgeDialogOpen, setPurgeDialogOpen] = useState(false)
   const [purging, setPurging] = useState(false)
@@ -457,9 +457,22 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
           <div className="flex items-center gap-1">
             <ArrowDownWideNarrow className="h-4 w-4 text-muted-foreground" />
             <Button size="sm" variant={sortBy === 'newest' ? 'default' : 'outline'} onClick={() => setSortBy('newest')}>最新</Button>
-            <Button size="sm" variant={sortBy === 'cost-desc' ? 'default' : 'outline'} onClick={() => setSortBy('cost-desc')}>积分↓</Button>
-            <Button size="sm" variant={sortBy === 'cost-asc' ? 'default' : 'outline'} onClick={() => setSortBy('cost-asc')}>积分↑</Button>
-            <Button size="sm" variant={sortBy === 'rpm-desc' ? 'default' : 'outline'} onClick={() => setSortBy('rpm-desc')}>RPM↓</Button>
+            <Button
+              size="sm"
+              variant={sortBy === 'cost-desc' || sortBy === 'cost-asc' ? 'default' : 'outline'}
+              onClick={() => setSortBy(sortBy === 'cost-desc' ? 'cost-asc' : 'cost-desc')}
+              title="点击切换积分升/降序"
+            >
+              积分{sortBy === 'cost-asc' ? '↑' : '↓'}
+            </Button>
+            <Button
+              size="sm"
+              variant={sortBy === 'rpm-desc' || sortBy === 'rpm-asc' ? 'default' : 'outline'}
+              onClick={() => setSortBy(sortBy === 'rpm-desc' ? 'rpm-asc' : 'rpm-desc')}
+              title="点击切换 RPM 升/降序"
+            >
+              RPM{sortBy === 'rpm-asc' ? '↑' : '↓'}
+            </Button>
           </div>
           <Button onClick={() => { setNewName(generateUniqueSerial()); setCreateDialogOpen(true) }} size="sm">
             <Plus className="h-4 w-4 mr-2" />
@@ -503,6 +516,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
           if (sortBy === 'cost-desc') return (usageMap.get(b.id)?.totalCredits ?? 0) - (usageMap.get(a.id)?.totalCredits ?? 0)
           if (sortBy === 'cost-asc') return (usageMap.get(a.id)?.totalCredits ?? 0) - (usageMap.get(b.id)?.totalCredits ?? 0)
           if (sortBy === 'rpm-desc') return (rpmData?.byApiKey?.[String(b.id)] ?? 0) - (rpmData?.byApiKey?.[String(a.id)] ?? 0)
+          if (sortBy === 'rpm-asc') return (rpmData?.byApiKey?.[String(a.id)] ?? 0) - (rpmData?.byApiKey?.[String(b.id)] ?? 0)
           return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         }
         const boundKeys = [...filteredKeys].filter(k => k.boundCredentialIds && k.boundCredentialIds.length > 0).sort(sortFn)

@@ -142,20 +142,34 @@ export function SettingsPanel() {
           </CardHeader>
           <CardContent>
             <div className="flex items-center justify-between py-3">
-              <span className="text-sm font-medium">均衡模式</span>
+              <div className="flex flex-col">
+                <span className="text-sm font-medium">均衡模式</span>
+                <span className="text-xs text-muted-foreground mt-1">
+                  优先级：粘住最高优先级账号 · 均衡负载：全部账号轮询 · 自动：最高优先级档内负载均衡
+                </span>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  const newMode = loadBalancingData?.mode === 'priority' ? 'balanced' : 'priority'
+                  const order = ['priority', 'balanced', 'auto'] as const
+                  const cur = loadBalancingData?.mode ?? 'priority'
+                  const newMode = order[(order.indexOf(cur) + 1) % order.length]
+                  const label = newMode === 'priority' ? '优先级模式' : newMode === 'balanced' ? '均衡负载' : '自动'
                   setLoadBalancingMode(newMode, {
-                    onSuccess: () => toast.success(`已切换为${newMode === 'priority' ? '优先级模式' : '均衡负载'}`),
+                    onSuccess: () => toast.success(`已切换为${label}`),
                     onError: (e) => toast.error(extractErrorMessage(e)),
                   })
                 }}
                 disabled={isLoadingMode || isSettingMode}
               >
-                {isLoadingMode ? '加载中...' : loadBalancingData?.mode === 'priority' ? '优先级模式' : '均衡负载'}
+                {isLoadingMode
+                  ? '加载中...'
+                  : loadBalancingData?.mode === 'priority'
+                    ? '优先级模式'
+                    : loadBalancingData?.mode === 'balanced'
+                      ? '均衡负载'
+                      : '自动'}
               </Button>
             </div>
           </CardContent>

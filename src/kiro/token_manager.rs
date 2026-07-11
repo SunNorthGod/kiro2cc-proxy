@@ -1432,7 +1432,9 @@ impl MultiTokenManager {
                 Some((entry.id, entry.credentials.clone()))
             }
             _ => {
-                // priority 模式：同优先级内按 rotation_bias 排序后 round-robin
+                // priority / auto 模式：取最高优先级(min_priority)那一档，档内按 rotation_bias round-robin。
+                // priority 与 auto 的差别在 acquire_context：priority 粘住 current_id 直到其不可用，
+                // auto 则每次请求都重选（真正在同优先级账号间负载均衡）。
                 let min_priority = pool.iter().map(|e| e.credentials.priority).min()?;
                 let top_tier: Vec<&CredentialEntry> = pool
                     .iter()
@@ -1480,9 +1482,14 @@ impl MultiTokenManager {
             }
 
             let (id, credentials) = {
-                let is_balanced = self.load_balancing_mode.lock().as_str() == "balanced";
+                // balanced 与 auto 都不固定 current_id：每次请求都按策略重选，
+                // 从而在（auto 的）同优先级账号之间实现每请求负载均衡。
+                let is_balanced = matches!(
+                    self.load_balancing_mode.lock().as_str(),
+                    "balanced" | "auto"
+                );
 
-                // balanced 模式：每次请求都轮询选择，不固定 current_id
+                // balanced/auto 模式：每次请求都轮询选择，不固定 current_id
                 // priority 模式：优先使用 current_id 指向的账号
                 let current_hit = if is_balanced {
                     None

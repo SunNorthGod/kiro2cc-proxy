@@ -126,15 +126,18 @@ export async function pollDeviceLogin(
   return data
 }
 
+// 负载均衡模式：priority=优先级(粘住最高优先级账号) / balanced=全局轮询 / auto=优先级+同级负载均衡
+export type LoadBalancingMode = 'priority' | 'balanced' | 'auto'
+
 // 获取负载均衡模式
-export async function getLoadBalancingMode(): Promise<{ mode: 'priority' | 'balanced' }> {
-  const { data } = await api.get<{ mode: 'priority' | 'balanced' }>('/config/load-balancing')
+export async function getLoadBalancingMode(): Promise<{ mode: LoadBalancingMode }> {
+  const { data } = await api.get<{ mode: LoadBalancingMode }>('/config/load-balancing')
   return data
 }
 
 // 设置负载均衡模式
-export async function setLoadBalancingMode(mode: 'priority' | 'balanced'): Promise<{ mode: 'priority' | 'balanced' }> {
-  const { data } = await api.put<{ mode: 'priority' | 'balanced' }>('/config/load-balancing', { mode })
+export async function setLoadBalancingMode(mode: LoadBalancingMode): Promise<{ mode: LoadBalancingMode }> {
+  const { data } = await api.put<{ mode: LoadBalancingMode }>('/config/load-balancing', { mode })
   return data
 }
 
