@@ -1657,6 +1657,9 @@ fn convert_assistant_message(
                                 && let (Some(t), Some(sig)) = (&block.thinking, &block.signature)
                                 && !t.is_empty()
                                 && !sig.is_empty()
+                                // 剥离中转站自己伪造的签名（后端不下发签名时的兜底假签名）。
+                                // 这类假签名对后端无效，回传会触发 THINKING_SIGNATURE_INVALID(400)。
+                                && !sig.starts_with(super::stream::FAKE_SIGNATURE_MARKER)
                             {
                                 reasoning_text = Some(t.clone());
                                 reasoning_signature = Some(sig.clone());
@@ -3179,6 +3182,30 @@ mod tests {
         );
         assert!(arm.tool_uses.is_none());
         assert_eq!(arm.content, "final answer, no tool use");
+    }
+
+    #[test]
+    fn test_convert_assistant_drops_fake_signed_thinking() {
+        use super::super::types::Message as AnthropicMessage;
+
+        // 回归修复：中转站自己伪造的签名（以 FAKE_SIGNATURE_MARKER 开头）即使出现在 tool_use 轮，
+        // 也不应回传给后端（否则触发 THINKING_SIGNATURE_INVALID 400，表现为"首轮正常、后续轮报错"）。
+        let fake_sig = format!("{}abcDEF123456==", crate::anthropic::stream::FAKE_SIGNATURE_MARKER);
+        let msg = AnthropicMessage {
+            role: "assistant".to_string(),
+            content: serde_json::json!([
+                {"type": "thinking", "thinking": "reasoning with a faked signature", "signature": fake_sig},
+                {"type": "tool_use", "id": "toolu_1", "name": "run_cmd", "input": {"cmd": "ls"}}
+            ]),
+        };
+
+        let result = convert_assistant_message(&msg).unwrap();
+        let arm = result.assistant_response_message;
+        assert!(
+            arm.reasoning_content.is_none(),
+            "伪造签名的 thinking 不应回传（防止后端 400）"
+        );
+        assert!(arm.tool_uses.is_some(), "tool_use 仍应保留");
     }
 
     #[test]

@@ -1784,11 +1784,19 @@ impl BufferedStreamContext {
     }
 }
 
+/// 伪造签名的识别标记（base64 合法字符）。当后端不下发真实推理签名时，中转站会伪造一个
+/// 长度足够的签名以通过部分客户端的校验；但该假签名对后端无效，若被客户端在下一轮回传，
+/// 后端会返回 THINKING_SIGNATURE_INVALID(400)。因此假签名以此标记开头，convert_assistant_message
+/// 在转换历史时据此识别并剥离（不回传给后端），避免"首轮正常、后续轮报错"。
+pub(crate) const FAKE_SIGNATURE_MARKER: &str = "FAKESIGk2ccPROXY";
+
 pub(crate) fn generate_fake_signature() -> String {
     const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let len = 160;
     let mut sig = String::with_capacity(len + 2);
-    for _ in 0..len {
+    // 以标记开头，便于回传时识别并剥离
+    sig.push_str(FAKE_SIGNATURE_MARKER);
+    while sig.len() < len {
         let idx = fastrand::usize(..BASE64_CHARS.len());
         sig.push(BASE64_CHARS[idx] as char);
     }
