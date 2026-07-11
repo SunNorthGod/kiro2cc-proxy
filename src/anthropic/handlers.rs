@@ -63,6 +63,81 @@ pub async fn ping(request: axum::http::Request<Body>) -> impl IntoResponse {
     }))
 }
 
+/// 判断上游错误是否为"历史 thinking 块签名无效"(THINKING_SIGNATURE_INVALID)。
+/// 该错误发生在请求校验阶段（流式响应开始之前），因此可安全地剥离 reasoning 后重试。
+fn is_thinking_signature_error(err: &Error) -> bool {
+    let s = err.to_string();
+    s.contains("THINKING_SIGNATURE_INVALID") || s.contains("signature` in `thinking")
+}
+
+/// 递归剥离 JSON 里所有名为 `reasoningContent` 的字段（只出现在历史 assistant 消息上）。
+/// 返回是否发生了剥离。
+fn strip_reasoning_value(v: &mut serde_json::Value) -> bool {
+    let mut changed = false;
+    match v {
+        serde_json::Value::Object(map) => {
+            if map.remove("reasoningContent").is_some() {
+                changed = true;
+            }
+            for (_k, child) in map.iter_mut() {
+                changed |= strip_reasoning_value(child);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                changed |= strip_reasoning_value(item);
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+/// 剥离 Kiro 请求体里所有历史 reasoning，返回新的请求体字符串。
+/// 若没有可剥离的 reasoning（返回 None），则无需重试。
+fn strip_reasoning_from_request_body(body: &str) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(body).ok()?;
+    if strip_reasoning_value(&mut v) {
+        serde_json::to_string(&v).ok()
+    } else {
+        None
+    }
+}
+
+/// 调用上游，自愈重试：若因历史 thinking 签名无效(THINKING_SIGNATURE_INVALID)被后端 400 拒绝，
+/// 则剥离请求体里全部历史 reasoning 后重试一次。让后端做签名裁判，无需在本地猜测签名有效性，
+/// 从而覆盖各种无效签名来源（伪造/过期/跨模型/历史遗留）而不误伤正常会话。
+async fn call_upstream_with_reasoning_retry(
+    provider: &crate::kiro::provider::KiroProvider,
+    request_body: &str,
+    bound_ids: &[u64],
+    streaming: bool,
+) -> anyhow::Result<(reqwest::Response, u64)> {
+    let first = if streaming {
+        provider.call_api_stream(request_body, bound_ids).await
+    } else {
+        provider.call_api(request_body, bound_ids).await
+    };
+    match first {
+        Err(e) if is_thinking_signature_error(&e) => {
+            match strip_reasoning_from_request_body(request_body) {
+                Some(stripped) => {
+                    tracing::warn!(
+                        "上游拒绝历史 thinking 签名(THINKING_SIGNATURE_INVALID)，剥离全部 reasoning 后重试一次"
+                    );
+                    if streaming {
+                        provider.call_api_stream(&stripped, bound_ids).await
+                    } else {
+                        provider.call_api(&stripped, bound_ids).await
+                    }
+                }
+                None => Err(e),
+            }
+        }
+        other => other,
+    }
+}
+
 fn map_provider_error_with_context(
     err: Error,
     model: &str,
@@ -297,10 +372,12 @@ async fn resolve_model_list(state: &AppState) -> Vec<Model> {
             Ok(resp) => {
                 let converted = convert_kiro_models(&resp);
                 if !converted.is_empty() {
+                    // 合并到硬编码已知目录：避免上游少返回时已知模型（如 Claude 全系）消失。
+                    let merged = merge_model_lists(build_model_list(), converted);
                     let mut guard = model_list_cache().lock().unwrap();
-                    *guard = Some((Instant::now(), clone_models(&converted)));
-                    tracing::info!("动态模型列表已刷新，共 {} 个模型", converted.len());
-                    return converted;
+                    *guard = Some((Instant::now(), clone_models(&merged)));
+                    tracing::info!("动态模型列表已刷新（合并硬编码目录），共 {} 个模型", merged.len());
+                    return merged;
                 }
                 tracing::warn!("ListAvailableModels 返回空列表，回退硬编码列表");
             }
@@ -320,6 +397,26 @@ async fn resolve_model_list(state: &AppState) -> Vec<Model> {
 
     // 4) 最终兜底：硬编码列表
     build_model_list()
+}
+
+/// 合并模型列表：以 base（硬编码已知目录）为基底，用 dynamic（后端动态结果）覆盖同名条目、
+/// 追加 base 中没有的新模型。避免上游 ListAvailableModels 少返回时已知模型（如 Claude 全系）消失。
+/// 覆盖时若动态条目缺少 effort 档位，则保留 base 中已烘焙的 effort，避免思考档位丢失。
+fn merge_model_lists(base: Vec<Model>, dynamic: Vec<Model>) -> Vec<Model> {
+    let mut out = base;
+    for mut dyn_m in dynamic {
+        if let Some(existing) = out.iter_mut().find(|b| b.id == dyn_m.id) {
+            if dyn_m.effort_levels.is_empty() && !existing.effort_levels.is_empty() {
+                dyn_m.effort_levels = existing.effort_levels.clone();
+                dyn_m.effort_schema_path = existing.effort_schema_path.clone();
+                dyn_m.default_effort_level = existing.default_effort_level.clone();
+            }
+            *existing = dyn_m;
+        } else {
+            out.push(dyn_m);
+        }
+    }
+    out
 }
 
 /// Model 不是 Clone（含固定字段），手动复制一份（含 effort 档位字段）。
@@ -393,7 +490,7 @@ fn build_model_list() -> Vec<Model> {
     const K200: i32 = 200_000;
     const K256: i32 = 256_000;
     const K196: i32 = 196_000;
-    vec![
+    let mut models = vec![
         mk_model(
             "auto",
             "Auto",
@@ -514,7 +611,23 @@ fn build_model_list() -> Vec<Model> {
             K256,
             "qwen",
         ),
-    ]
+    ];
+    // 为支持思考档位的 Claude 模型补上 effort（动态 ListAvailableModels 缺失时的兜底，
+    // 与官方实测一致：sonnet-5 / opus-4.8 / opus-4.7 有 xhigh；opus-4.6 / sonnet-4.6 无 xhigh）。
+    const XHIGH: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+    const NO_XHIGH: [&str; 4] = ["low", "medium", "high", "max"];
+    for m in models.iter_mut() {
+        let (levels, default): (&[&str], &str) = match m.id.as_str() {
+            "claude-sonnet-5" | "claude-opus-4-8" => (&XHIGH, "high"),
+            "claude-opus-4-7" => (&XHIGH, "xhigh"),
+            "claude-opus-4-6" | "claude-sonnet-4-6" => (&NO_XHIGH, "high"),
+            _ => continue,
+        };
+        m.effort_levels = levels.iter().map(|s| s.to_string()).collect();
+        m.effort_schema_path = Some("output_config".to_string());
+        m.default_effort_level = Some(default.to_string());
+    }
+    models
 }
 
 /// GET /v1/models/:model_id
@@ -775,10 +888,13 @@ async fn handle_stream_request(
     client_ip: Option<String>,
 ) -> Response {
     // 调用 Kiro API（支持多账号故障转移）
-    let (response, credential_id) = match provider.call_api_stream(request_body, &bound_ids).await {
-        Ok(resp) => resp,
-        Err(e) => return map_provider_error_with_context(e, model, input_tokens),
-    };
+    let (response, credential_id) =
+        match call_upstream_with_reasoning_retry(provider.as_ref(), request_body, &bound_ids, true)
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => return map_provider_error_with_context(e, model, input_tokens),
+        };
 
     // 创建流处理上下文
     let mut ctx = StreamContext::new_with_thinking(model, input_tokens, thinking_enabled)
@@ -975,10 +1091,13 @@ async fn handle_non_stream_request(
     fp_profile: Option<Vec<crate::cache::fingerprint::ContentSegment>>,
 ) -> Response {
     // 调用 Kiro API（支持多账号故障转移）
-    let (response, credential_id) = match provider.call_api(request_body, &bound_ids).await {
-        Ok(resp) => resp,
-        Err(e) => return map_provider_error_with_context(e, model, input_tokens),
-    };
+    let (response, credential_id) =
+        match call_upstream_with_reasoning_retry(provider.as_ref(), request_body, &bound_ids, false)
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => return map_provider_error_with_context(e, model, input_tokens),
+        };
 
     // 读取响应体
     let body_bytes = match response.bytes().await {
@@ -1643,10 +1762,13 @@ async fn handle_stream_request_buffered(
     client_ip: Option<String>,
 ) -> Response {
     // 调用 Kiro API（支持多账号故障转移）
-    let (response, credential_id) = match provider.call_api_stream(request_body, &bound_ids).await {
-        Ok(resp) => resp,
-        Err(e) => return map_provider_error_with_context(e, model, estimated_input_tokens),
-    };
+    let (response, credential_id) =
+        match call_upstream_with_reasoning_retry(provider.as_ref(), request_body, &bound_ids, true)
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => return map_provider_error_with_context(e, model, estimated_input_tokens),
+        };
 
     // 创建缓冲流处理上下文
     let ctx = BufferedStreamContext::new(model, estimated_input_tokens, thinking_enabled)
@@ -1804,6 +1926,65 @@ mod tests {
 
     fn find_by_id(id: &str) -> Option<Model> {
         build_model_list().into_iter().find(|m| m.id == id)
+    }
+
+    #[test]
+    fn test_strip_reasoning_from_request_body() {
+        // 剥离历史里所有 reasoningContent；无 reasoning 时返回 None。
+        let body = serde_json::json!({
+            "conversationState": {
+                "history": [
+                    {"assistantResponseMessage": {
+                        "content": "x",
+                        "toolUses": [{"toolUseId": "t1", "name": "f", "input": {}}],
+                        "reasoningContent": {"reasoningText": {"text": "r", "signature": "s"}}
+                    }},
+                    {"userInputMessage": {"content": "y"}}
+                ]
+            }
+        })
+        .to_string();
+        let stripped = strip_reasoning_from_request_body(&body).expect("应发生剥离");
+        assert!(!stripped.contains("reasoningContent"), "reasoningContent 应被剥离");
+        assert!(stripped.contains("toolUses"), "tool_use 应保留");
+
+        // 无 reasoning => None（无需重试）
+        let clean = serde_json::json!({"conversationState": {"history": []}}).to_string();
+        assert!(strip_reasoning_from_request_body(&clean).is_none());
+    }
+
+    #[test]
+    fn test_hardcoded_thinking_models_have_effort() {
+        // 硬编码兜底也要带 effort 档位（动态 ListAvailableModels 缺失时不丢思考档位）。
+        let s5 = find_by_id("claude-sonnet-5").unwrap();
+        assert!(s5.effort_levels.contains(&"xhigh".to_string()));
+        assert_eq!(s5.default_effort_level.as_deref(), Some("high"));
+        let o47 = find_by_id("claude-opus-4-7").unwrap();
+        assert_eq!(o47.default_effort_level.as_deref(), Some("xhigh"));
+        let o46 = find_by_id("claude-opus-4-6").unwrap();
+        assert!(!o46.effort_levels.contains(&"xhigh".to_string()), "opus-4.6 无 xhigh");
+        assert!(o46.effort_levels.contains(&"max".to_string()));
+    }
+
+    #[test]
+    fn test_merge_model_lists_keeps_hardcoded_when_dynamic_partial() {
+        // 动态只返回少数非 Claude 模型时，合并后 Claude 仍在列（修复"模型列表缺失"）。
+        let base = build_model_list();
+        let dynamic = vec![mk_model("deepseek-3.2", "Deepseek v3.2", "d", 64000, 164_000, "deepseek")];
+        let merged = merge_model_lists(base, dynamic);
+        assert!(merged.iter().any(|m| m.id == "claude-opus-4-8"), "Claude Opus 4.8 应仍在列");
+        assert!(merged.iter().any(|m| m.id == "claude-sonnet-5"), "Claude Sonnet 5 应仍在列");
+        assert!(merged.iter().any(|m| m.id == "deepseek-3.2"));
+    }
+
+    #[test]
+    fn test_merge_preserves_baked_effort_when_dynamic_lacks_it() {
+        // 动态条目缺 effort 时，保留硬编码烘焙的 effort（不被清空）。
+        let base = build_model_list();
+        let dynamic = vec![mk_model("claude-sonnet-5", "Claude Sonnet 5", "d", 64000, 1_000_000, "anthropic")];
+        let merged = merge_model_lists(base, dynamic);
+        let s5 = merged.iter().find(|m| m.id == "claude-sonnet-5").unwrap();
+        assert!(!s5.effort_levels.is_empty(), "动态缺 effort 时应保留硬编码 effort");
     }
 
     #[test]
