@@ -3213,8 +3213,8 @@ impl MultiTokenManager {
 
     /// 设置负载均衡模式（Admin API）
     pub fn set_load_balancing_mode(&self, mode: String) -> anyhow::Result<()> {
-        // 验证模式值
-        if mode != "priority" && mode != "balanced" {
+        // 验证模式值：priority / balanced / auto
+        if mode != "priority" && mode != "balanced" && mode != "auto" {
             anyhow::bail!("无效的负载均衡模式: {}", mode);
         }
 
