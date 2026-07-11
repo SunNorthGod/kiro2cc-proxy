@@ -1646,12 +1646,11 @@ fn convert_assistant_message(
             for item in arr {
                 if let Ok(block) = serde_json::from_value::<ContentBlock>(item.clone()) {
                     match block.block_type.as_str() {
-                        // 历史 thinking 块：仅当带签名、且该轮包含 tool_use 时才保留并回传
-                        // （转成 Kiro reasoningContent），让后端在工具循环中延续思考。
-                        // 说明（回归修复）：交错思考只需要"思考→tool_use"这类续跑轮的 thinking；
-                        // 纯文本的已完成轮不需要，且其签名可能是其他模型/客户端历史里对 Claude
-                        // 后端无效的签名（如 opencode 切换模型），无脑转发会让整轮请求被后端 400
-                        // 拒绝（"Invalid signature in thinking block"）。tool_use 门控在下方施加。
+                        // 历史 thinking 块：带签名即保留并回传（转成 Kiro reasoningContent），
+                        // 让后端延续思考——不再限制"仅 tool_use 轮"，因为纯文本轮的思考同样是
+                        // 上下文的一部分，丢弃会让模型在后续轮"想得更浅"。对无效签名（伪造/过期/
+                        // 跨模型历史）的兜底改由 handlers 的自愈重试处理（400 后剥离 reasoning 重试）。
+                        // 这里仍主动剥离中转站自己伪造的签名（带标记），避免可预见的无谓重试。
                         "thinking" => {
                             if reasoning_text.is_none()
                                 && let (Some(t), Some(sig)) = (&block.thinking, &block.signature)
@@ -1734,10 +1733,9 @@ fn convert_assistant_message(
     if has_tool_use {
         assistant = assistant.with_tool_uses(tool_uses);
     }
-    // tool_use 门控：仅在该轮有 tool_use 时才回传推理，避免转发已完成轮里可能无效的历史签名。
-    if has_tool_use
-        && let (Some(t), Some(sig)) = (reasoning_text, reasoning_signature)
-    {
+    // 带签名的推理一律回传（不再限制 tool_use 轮），保留完整思考上下文；
+    // 无效签名由 handlers 的自愈重试兜底。
+    if let (Some(t), Some(sig)) = (reasoning_text, reasoning_signature) {
         assistant = assistant.with_reasoning(t, sig);
     }
 
@@ -1823,10 +1821,8 @@ fn merge_assistant_messages(
     if has_tool_use {
         assistant = assistant.with_tool_uses(all_tool_uses);
     }
-    // 与 convert_assistant_message 一致：仅在有 tool_use 时才回传推理。
-    if has_tool_use
-        && let Some((t, sig)) = merged_reasoning
-    {
+    // 与 convert_assistant_message 一致：带签名的推理一律回传，无效签名由自愈重试兜底。
+    if let Some((t, sig)) = merged_reasoning {
         assistant = assistant.with_reasoning(t, sig);
     }
     Ok(HistoryAssistantMessage {
@@ -3160,26 +3156,28 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_assistant_drops_signed_thinking_without_tool_use() {
+    fn test_convert_assistant_keeps_signed_thinking_without_tool_use() {
         use super::super::types::Message as AnthropicMessage;
 
-        // 回归修复：纯文本已完成轮里的带签名 thinking 块不应回传。
-        // 该签名可能来自其他模型/客户端历史（如 opencode 切换模型），对 Claude 后端无效，
-        // 转发会导致整轮请求被后端 400 拒绝（"Invalid signature in thinking block"）。
+        // 门控已放开：纯文本（无 tool_use）轮里的带签名 thinking 也回传，保留完整思考上下文，
+        // 避免模型在后续轮"想得更浅"。无效历史签名不再靠丢弃防护，而由 handlers 的自愈重试兜底
+        // （400 THINKING_SIGNATURE_INVALID → 剥离 reasoning 重试一次）。
         let msg = AnthropicMessage {
             role: "assistant".to_string(),
             content: serde_json::json!([
-                {"type": "thinking", "thinking": "reasoning from another model", "signature": "foreign-sig"},
+                {"type": "thinking", "thinking": "some reasoning", "signature": "sig-xyz-789"},
                 {"type": "text", "text": "final answer, no tool use"}
             ]),
         };
 
         let result = convert_assistant_message(&msg).unwrap();
         let arm = result.assistant_response_message;
-        assert!(
-            arm.reasoning_content.is_none(),
-            "无 tool_use 的已完成轮不应回传 thinking（防止无效历史签名 400）"
-        );
+        let rc = arm
+            .reasoning_content
+            .as_ref()
+            .expect("无 tool_use 的已完成轮也应回传带签名 thinking");
+        assert_eq!(rc.reasoning_text.text, "some reasoning");
+        assert_eq!(rc.reasoning_text.signature, "sig-xyz-789");
         assert!(arm.tool_uses.is_none());
         assert_eq!(arm.content, "final answer, no tool use");
     }
