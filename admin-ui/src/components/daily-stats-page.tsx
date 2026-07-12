@@ -16,6 +16,22 @@ function formatDate(dateStr: string): string {
   })
 }
 
+// 中文单位：万 / 亿
+function fmtCn(n: number): string {
+  if (!isFinite(n)) return '-'
+  const a = Math.abs(n)
+  if (a >= 1e8) return (n / 1e8).toFixed(2) + '亿'
+  if (a >= 1e4) return (n / 1e4).toFixed(2) + '万'
+  return String(Math.round(n))
+}
+function fmtCreditsCn(n: number): string {
+  if (!isFinite(n)) return '-'
+  const a = Math.abs(n)
+  if (a >= 1e8) return (n / 1e8).toFixed(2) + '亿'
+  if (a >= 1e4) return (n / 1e4).toFixed(2) + '万'
+  return n.toFixed(2)
+}
+
 export function DailyStatsPage({ onBack, onViewDay, showBack = true }: DailyStatsPageProps) {
   const { data, isLoading, refetch } = useDailyUsage()
 
@@ -47,28 +63,37 @@ export function DailyStatsPage({ onBack, onViewDay, showBack = true }: DailyStat
                   <tr className="border-b bg-muted/50">
                     <th className="text-left px-4 py-2 font-medium text-muted-foreground">日期</th>
                     <th className="text-right px-4 py-2 font-medium text-muted-foreground">请求数</th>
-                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">Credits</th>
+                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">Token</th>
+                    <th className="text-right px-4 py-2 font-medium text-muted-foreground">积分</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.map((row) => (
+                  {data.map((row) => {
+                    const inTok = row.totalInputTokens ?? 0
+                    const outTok = row.totalOutputTokens ?? 0
+                    return (
                     <tr
                       key={row.date}
                       className="border-b last:border-0 hover:bg-muted/30 transition-colors cursor-pointer"
                       onClick={() => onViewDay(row.date)}
                     >
                       <td className="px-4 py-2 font-medium">{formatDate(row.date)}</td>
-                      <td className="px-4 py-2 text-right tabular-nums">{row.totalRequests}</td>
+                      <td className="px-4 py-2 text-right tabular-nums">{fmtCn(row.totalRequests)}</td>
+                      <td className="px-4 py-2 text-right tabular-nums text-purple-600 dark:text-purple-400">
+                        <div>{fmtCn(inTok + outTok)}</div>
+                        <div className="text-xs text-muted-foreground">入 {fmtCn(inTok)} / 出 {fmtCn(outTok)}</div>
+                      </td>
                       <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
-                        <div>{row.totalCredits.toFixed(4)}</div>
+                        <div>{fmtCreditsCn(row.totalCredits)}</div>
                         {row.totalCreditsSaved != null && row.totalCreditsSaved > 0 && (
                           <div className="text-xs text-green-600 dark:text-green-400">
-                            省 {row.totalCreditsSaved.toFixed(4)}
+                            省 {fmtCreditsCn(row.totalCreditsSaved)}
                           </div>
                         )}
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

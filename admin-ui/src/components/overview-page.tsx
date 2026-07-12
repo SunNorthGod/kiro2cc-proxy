@@ -5,63 +5,116 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useOverview, useRpm, useApiKeys, useCredentials } from '@/hooks/use-credentials'
 import type { DailySummary } from '@/types/api'
 
-// ============ 数值格式化 ============
+// ============ 数值格式化（中文单位：万 / 亿）============
 function fmtInt(n: number): string {
   if (!isFinite(n)) return '-'
-  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B'
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k'
+  const a = Math.abs(n)
+  if (a >= 1e8) return (n / 1e8).toFixed(2) + '亿'
+  if (a >= 1e4) return (n / 1e4).toFixed(2) + '万'
   return String(Math.round(n))
 }
 function fmtCredits(n: number): string {
   if (!isFinite(n)) return '-'
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M'
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'k'
+  const a = Math.abs(n)
+  if (a >= 1e8) return (n / 1e8).toFixed(2) + '亿'
+  if (a >= 1e4) return (n / 1e4).toFixed(2) + '万'
   return n.toFixed(1)
 }
 
 const MODEL_COLORS = ['#8b5cf6', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#14b8a6', '#6366f1']
 
-// ============ 内联 SVG 折线图 ============
+// 把最大值向上取整到"好看"的刻度（1/2/5 × 10^k），让 Y 轴网格线数值整齐
+function niceCeil(v: number): number {
+  if (v <= 0) return 1
+  const p = Math.pow(10, Math.floor(Math.log10(v)))
+  const f = v / p
+  const nf = f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10
+  return nf * p
+}
+
+// ============ 内联 SVG 折线图（带网格线 / Y 轴刻度 / 渐变 / 悬停提示）============
 function LineChart({
   points,
-  height = 170,
-  color = 'hsl(var(--primary))',
+  height = 210,
+  color = '#8b5cf6',
+  format = fmtCredits,
 }: {
   points: { label: string; value: number }[]
   height?: number
   color?: string
+  format?: (n: number) => string
 }) {
   if (points.length === 0) {
-    return <div className="text-sm text-muted-foreground py-12 text-center">暂无数据</div>
+    return <div className="text-sm text-muted-foreground py-16 text-center">暂无数据</div>
   }
-  const w = 720
+  const w = 760
   const h = height
-  const padL = 6
-  const padR = 6
-  const padT = 12
-  const padB = 22
-  const max = Math.max(...points.map((p) => p.value), 1)
+  const padL = 52
+  const padR = 14
+  const padT = 14
+  const padB = 26
+  const rawMax = Math.max(...points.map((p) => p.value), 1)
+  const max = niceCeil(rawMax)
   const n = points.length
   const x = (i: number) => padL + (n === 1 ? (w - padL - padR) / 2 : (i / (n - 1)) * (w - padL - padR))
   const y = (v: number) => padT + (1 - v / max) * (h - padT - padB)
   const linePts = points.map((p, i) => `${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(' ')
-  const areaPts = `${x(0).toFixed(1)},${h - padB} ${linePts} ${x(n - 1).toFixed(1)},${h - padB}`
-  const labelIdx = n <= 1 ? [0] : [0, Math.floor((n - 1) / 2), n - 1]
+  const areaPts = `${x(0).toFixed(1)},${(h - padB).toFixed(1)} ${linePts} ${x(n - 1).toFixed(1)},${(h - padB).toFixed(1)}`
+  const gridN = 4
+  const gridVals = Array.from({ length: gridN + 1 }, (_, k) => (max / gridN) * k)
+  const labelIdx = n <= 1 ? [0] : n <= 8 ? points.map((_, i) => i) : [0, Math.floor((n - 1) / 2), n - 1]
+  const gid = 'ovgrad-' + color.replace(/[^a-z0-9]/gi, '')
   return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }} preserveAspectRatio="none">
-      <polygon points={areaPts} fill={color} opacity={0.1} />
-      <polyline points={linePts} fill="none" stroke={color} strokeWidth={2} vectorEffect="non-scaling-stroke" />
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }}>
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.28" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      {/* 水平网格线 + Y 轴刻度 */}
+      {gridVals.map((v, k) => (
+        <g key={k}>
+          <line
+            x1={padL}
+            y1={y(v)}
+            x2={w - padR}
+            y2={y(v)}
+            stroke="currentColor"
+            strokeOpacity={0.08}
+            strokeWidth={1}
+          />
+          <text x={padL - 8} y={y(v) + 3.5} fontSize={10.5} textAnchor="end" fill="currentColor" className="text-muted-foreground">
+            {format(v)}
+          </text>
+        </g>
+      ))}
+      {/* 面积 + 折线 */}
+      <polygon points={areaPts} fill={`url(#${gid})`} />
+      <polyline
+        points={linePts}
+        fill="none"
+        stroke={color}
+        strokeWidth={2.5}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      {/* 数据点（带原生悬停提示）*/}
       {n <= 31 &&
         points.map((p, i) => (
-          <circle key={i} cx={x(i)} cy={y(p.value)} r={2.5} fill={color} />
+          <g key={i}>
+            <title>{`${p.label} · ${format(p.value)}`}</title>
+            <circle cx={x(i)} cy={y(p.value)} r={6} fill="transparent" />
+            <circle cx={x(i)} cy={y(p.value)} r={3} fill={color} stroke="hsl(var(--card))" strokeWidth={1.5} />
+          </g>
         ))}
+      {/* X 轴日期 */}
       {labelIdx.map((i) => (
         <text
           key={i}
           x={x(i)}
-          y={h - 6}
-          fontSize={11}
+          y={h - 8}
+          fontSize={10.5}
           fill="currentColor"
           className="text-muted-foreground"
           textAnchor={i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle'}
@@ -218,7 +271,7 @@ export function OverviewPage() {
           {isLoading ? (
             <div className="text-sm text-muted-foreground py-12 text-center">加载中...</div>
           ) : (
-            <LineChart points={linePoints} color={metricColor} />
+            <LineChart points={linePoints} color={metricColor} format={metric === 'credits' ? fmtCredits : fmtInt} />
           )}
         </CardContent>
       </Card>
