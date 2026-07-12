@@ -38,6 +38,11 @@ interface KamAccount {
   }
   machineId?: string
   status?: string
+  // 账号级字段（kiro-go 等扁平格式把它们放在账号顶层，external_idp 查额度必需）
+  profileArn?: string
+  apiRegion?: string
+  authRegion?: string
+  priority?: number
 }
 
 interface VerificationResult {
@@ -273,11 +278,24 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
             throw new Error('idc 模式需要同时提供 clientId 和 clientSecret')
           }
 
+          // 区域解析：external_idp / idc 查用量走 management.{region}.kiro.dev，
+          // region 必须是账号真实区域（如 eu-central-1），否则 getUsageLimits 返回 400 Invalid profileArn。
+          // 账号级 apiRegion/authRegion 优先，其次 credentials.region。
+          const acctRegion = account.apiRegion?.trim() || account.authRegion?.trim() || cred.region?.trim() || undefined
+          const authRegion = account.authRegion?.trim() || cred.region?.trim() || acctRegion
+          const apiRegion = account.apiRegion?.trim() || acctRegion
+          // profileArn：external_idp 查用量必需，扁平格式放在账号顶层
+          const profileArn = account.profileArn?.trim() || undefined
+          const priority = typeof account.priority === 'number' ? account.priority : undefined
+
           const addedCred = await addCredential({
             refreshToken: token,
             authMethod,
             email: account.email || account.nickname || undefined,
-            authRegion: cred.region?.trim() || undefined,
+            authRegion,
+            apiRegion,
+            profileArn,
+            priority,
             clientId,
             clientSecret,
             tokenEndpoint,
@@ -412,14 +430,14 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
     >
       <DialogContent className="sm:max-w-2xl max-h-[80vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>账号导入（KAM 导出 / 本地 Kiro 登录，自动验活）</DialogTitle>
+          <DialogTitle>批量导入账号（KAM / kiro-go / 本地登录，自动验活）</DialogTitle>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto space-y-4 py-4">
           <div className="space-y-2">
-            <label className="text-sm font-medium">导入 JSON（KAM 导出 或 本地 kiro-auth-token.json）</label>
+            <label className="text-sm font-medium">导入 JSON（KAM 导出 / kiro-go 批量配置 / 本地 kiro-auth-token.json）</label>
             <textarea
-              placeholder={'粘贴 KAM 导出 JSON，或本地 ~/.aws/sso/cache/kiro-auth-token.json 全文（自动识别 external_idp / idc / social），也可拖入 .json 文件'}
+              placeholder={'粘贴任意格式：KAM 导出 JSON、kiro-go 批量配置（accounts 数组）、账号数组，或本地 ~/.aws/sso/cache/kiro-auth-token.json 全文（自动识别 external_idp / idc / social），也可拖入 .json 文件'}
               value={jsonInput}
               onChange={(e) => setJsonInput(e.target.value)}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
@@ -439,7 +457,7 @@ export function KamImportDialog({ open, onOpenChange }: KamImportDialogProps) {
               disabled={importing}
               className="flex min-h-[200px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 font-mono"
             />
-            <p className="text-xs text-muted-foreground">支持 KAM 批量导出，也支持单个本地 kiro-auth-token.json（含微软 Entra external_idp）。IdC/BuilderId 建议改用「SSO 登录」，本地 refreshToken 可能已被截断失效。</p>
+            <p className="text-xs text-muted-foreground">支持 KAM 批量导出、kiro-go 批量配置（accounts 数组，含 profileArn / region）、账号数组，以及单个本地 kiro-auth-token.json（含微软 Entra external_idp）。IdC/BuilderId 建议改用「SSO 登录」，本地 refreshToken 可能已被截断失效。</p>
           </div>
 
           {/* 解析预览 */}
