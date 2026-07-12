@@ -818,6 +818,7 @@ pub async fn post_messages(
     // 提取用量追踪信息
     let api_key_id = identity.map(|ext| ext.0.id);
     let usage_tracker = state.usage_tracker.clone();
+    let rpm_tracker = state.rpm_tracker.clone();
     let client_ip = extract_client_ip(&headers, Some(&addr));
 
     // 计算 prompt cache 模拟 usage（message_start 早期值；终值会被降级链覆盖）
@@ -844,6 +845,7 @@ pub async fn post_messages(
             prefix_estimated_tokens,
             thinking_enabled,
             usage_tracker,
+            rpm_tracker,
             api_key_id,
             prompt_cache_usage,
             bound_ids,
@@ -860,6 +862,7 @@ pub async fn post_messages(
             prefix_estimated_tokens,
             thinking_enabled,
             usage_tracker,
+            rpm_tracker,
             api_key_id,
             prompt_cache_usage,
             bound_ids,
@@ -882,6 +885,7 @@ async fn handle_stream_request(
     prefix_estimated_tokens: i32,
     thinking_enabled: bool,
     usage_tracker: Option<std::sync::Arc<crate::model::usage::UsageTracker>>,
+    rpm_tracker: Option<std::sync::Arc<crate::model::rpm::RpmTracker>>,
     api_key_id: Option<u32>,
     prompt_cache_usage: crate::cache::PromptCacheUsage,
     bound_ids: Vec<u64>,
@@ -899,6 +903,7 @@ async fn handle_stream_request(
     // 创建流处理上下文
     let mut ctx = StreamContext::new_with_thinking(model, input_tokens, thinking_enabled)
         .with_usage_tracking(usage_tracker, api_key_id, Some(credential_id), client_ip)
+        .with_rpm_tracker(rpm_tracker)
         .with_prompt_cache_usage(prompt_cache_usage)
         .with_prefix_estimated_tokens(prefix_estimated_tokens);
 
@@ -1082,6 +1087,7 @@ async fn handle_non_stream_request(
     prefix_estimated_tokens: i32,
     thinking_enabled: bool,
     usage_tracker: Option<std::sync::Arc<crate::model::usage::UsageTracker>>,
+    rpm_tracker: Option<std::sync::Arc<crate::model::rpm::RpmTracker>>,
     api_key_id: Option<u32>,
     prompt_cache_usage: crate::cache::PromptCacheUsage,
     bound_ids: Vec<u64>,
@@ -1367,6 +1373,11 @@ async fn handle_non_stream_request(
             Some(report_cache_read),
             Some(report_cache_creation),
         );
+    }
+    // 记录 TPM（token 速度）
+    if let Some(rpm) = &rpm_tracker {
+        let toks = (final_input_tokens.max(0) as u64) + (output_tokens.max(0) as u64);
+        rpm.record_tokens(api_key_id, Some(credential_id), toks);
     }
 
     // 构建 Anthropic 响应
@@ -1689,6 +1700,7 @@ pub async fn post_messages_cc(
     // 提取用量追踪信息
     let api_key_id = identity.map(|ext| ext.0.id);
     let usage_tracker = state.usage_tracker.clone();
+    let rpm_tracker = state.rpm_tracker.clone();
     let client_ip = extract_client_ip(&headers, Some(&addr));
 
     // 计算 prompt cache 模拟 usage
@@ -1715,6 +1727,7 @@ pub async fn post_messages_cc(
             prefix_estimated_tokens,
             thinking_enabled,
             usage_tracker.clone(),
+            rpm_tracker.clone(),
             api_key_id,
             prompt_cache_usage,
             bound_ids,
@@ -1731,6 +1744,7 @@ pub async fn post_messages_cc(
             prefix_estimated_tokens,
             thinking_enabled,
             usage_tracker,
+            rpm_tracker,
             api_key_id,
             prompt_cache_usage,
             bound_ids,
@@ -1756,6 +1770,7 @@ async fn handle_stream_request_buffered(
     prefix_estimated_tokens: i32,
     thinking_enabled: bool,
     usage_tracker: Option<std::sync::Arc<crate::model::usage::UsageTracker>>,
+    rpm_tracker: Option<std::sync::Arc<crate::model::rpm::RpmTracker>>,
     api_key_id: Option<u32>,
     prompt_cache_usage: crate::cache::PromptCacheUsage,
     bound_ids: Vec<u64>,
@@ -1773,6 +1788,7 @@ async fn handle_stream_request_buffered(
     // 创建缓冲流处理上下文
     let ctx = BufferedStreamContext::new(model, estimated_input_tokens, thinking_enabled)
         .with_usage_tracking(usage_tracker, api_key_id, Some(credential_id), client_ip)
+        .with_rpm_tracker(rpm_tracker)
         .with_prompt_cache_usage(prompt_cache_usage)
         .with_prefix_estimated_tokens(prefix_estimated_tokens);
 

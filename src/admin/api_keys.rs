@@ -313,6 +313,16 @@ pub async fn get_daily_usage(State(state): State<AdminState>) -> impl IntoRespon
     Json(tracker.get_daily_summaries()).into_response()
 }
 
+/// GET /api/admin/overview
+/// 首页概览：全历史总量 + 近 30 天序列 + 模型分布 + Top API Key（供首页一次拉取）
+pub async fn get_overview(State(state): State<AdminState>) -> impl IntoResponse {
+    let Some(tracker) = &state.usage_tracker else {
+        let error = AdminErrorResponse::internal_error("用量追踪未启用");
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response();
+    };
+    Json(tracker.get_overview(30)).into_response()
+}
+
 /// GET /api/admin/usage/daily/{date}/records?page=1&page_size=50
 /// 分页获取指定日期的原始请求记录（最多 2000 条）
 pub async fn get_daily_usage_records(

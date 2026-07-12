@@ -20,6 +20,7 @@ import {
   getAllUsage,
   resetKeyUsage,
   getRpm,
+  getOverview,
   getAuthKeys,
   setAuthKeys,
   getKeyUsageRecords,
@@ -278,6 +279,15 @@ export function useRpm() {
     queryKey: ['rpm'],
     queryFn: getRpm,
     refetchInterval: 5000,
+  })
+}
+
+// 查询首页概览聚合数据（每 30 秒刷新）
+export function useOverview() {
+  return useQuery({
+    queryKey: ['overview'],
+    queryFn: getOverview,
+    refetchInterval: 30000,
   })
 }
 

@@ -33,13 +33,19 @@ impl TimestampQueue {
 
     /// 记录一次请求
     fn record(&mut self, now_secs: u64) {
+        self.add(now_secs, 1);
+    }
+
+    /// 向当前秒的 bucket 累加数值（请求计数用 amount=1；token 速度用 amount=token 数）。
+    /// 复用同一环形缓冲：count() 求和即得"最近 60 秒该数值的总量"。
+    fn add(&mut self, now_secs: u64, amount: u64) {
         let index = (now_secs as usize) % WINDOW_SECS;
         let bucket = &mut self.buckets[index];
         if bucket.timestamp == now_secs {
-            bucket.count += 1;
+            bucket.count += amount;
         } else {
             bucket.timestamp = now_secs;
-            bucket.count = 1;
+            bucket.count = amount;
         }
     }
 
@@ -83,6 +89,12 @@ struct RpmTrackerInner {
     by_credential: HashMap<u64, TimestampQueue>,
     /// 按 API Key ID 分组
     by_api_key: HashMap<u32, TimestampQueue>,
+    /// 全局 token 队列（最近 60 秒 token 总量，用于 TPM）
+    global_tokens: TimestampQueue,
+    /// 按账号 ID 分组的 token 队列
+    tokens_by_credential: HashMap<u64, TimestampQueue>,
+    /// 按 API Key ID 分组的 token 队列
+    tokens_by_api_key: HashMap<u32, TimestampQueue>,
 }
 
 /// RPM 快照（用于 API 响应）
@@ -95,6 +107,12 @@ pub struct RpmSnapshot {
     pub by_credential: HashMap<u64, u64>,
     /// 按 API Key ID 分组的 RPM
     pub by_api_key: HashMap<u32, u64>,
+    /// 全局 TPM（最近 60 秒处理的 token 总量，input+output）
+    pub tokens_per_min: u64,
+    /// 按账号 ID 分组的 TPM
+    pub tokens_by_credential: HashMap<u64, u64>,
+    /// 按 API Key ID 分组的 TPM
+    pub tokens_by_api_key: HashMap<u32, u64>,
 }
 
 impl RpmTracker {
@@ -105,6 +123,9 @@ impl RpmTracker {
                 global: TimestampQueue::new(),
                 by_credential: HashMap::new(),
                 by_api_key: HashMap::new(),
+                global_tokens: TimestampQueue::new(),
+                tokens_by_credential: HashMap::new(),
+                tokens_by_api_key: HashMap::new(),
             }),
         }
     }
@@ -125,6 +146,34 @@ impl RpmTracker {
                 .entry(key_id)
                 .or_insert_with(TimestampQueue::new)
                 .record(now_secs);
+        }
+    }
+
+    /// 记录一次请求处理的 token 数（在响应结束、拿到最终 input+output token 后调用）。
+    /// 用于 TPM（token/分钟）实时速度：全局 + per-API-Key + per-credential。
+    pub fn record_tokens(&self, api_key_id: Option<u32>, credential_id: Option<u64>, tokens: u64) {
+        if tokens == 0 {
+            return;
+        }
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let mut inner = self.inner.lock().unwrap();
+        inner.global_tokens.add(now_secs, tokens);
+        if let Some(key_id) = api_key_id {
+            inner
+                .tokens_by_api_key
+                .entry(key_id)
+                .or_insert_with(TimestampQueue::new)
+                .add(now_secs, tokens);
+        }
+        if let Some(cid) = credential_id {
+            inner
+                .tokens_by_credential
+                .entry(cid)
+                .or_insert_with(TimestampQueue::new)
+                .add(now_secs, tokens);
         }
     }
 
@@ -203,10 +252,33 @@ impl RpmTracker {
             .map(|(&id, queue)| (id, queue.count(now_secs)))
             .collect();
 
+        let tokens_per_min = inner.global_tokens.count(now_secs);
+
+        inner
+            .tokens_by_credential
+            .retain(|_, queue| queue.count(now_secs) > 0);
+        let tokens_by_credential: HashMap<u64, u64> = inner
+            .tokens_by_credential
+            .iter()
+            .map(|(&id, queue)| (id, queue.count(now_secs)))
+            .collect();
+
+        inner
+            .tokens_by_api_key
+            .retain(|_, queue| queue.count(now_secs) > 0);
+        let tokens_by_api_key: HashMap<u32, u64> = inner
+            .tokens_by_api_key
+            .iter()
+            .map(|(&id, queue)| (id, queue.count(now_secs)))
+            .collect();
+
         RpmSnapshot {
             global,
             by_credential,
             by_api_key,
+            tokens_per_min,
+            tokens_by_credential,
+            tokens_by_api_key,
         }
     }
 }

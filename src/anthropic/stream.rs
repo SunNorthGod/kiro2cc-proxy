@@ -650,6 +650,8 @@ pub struct StreamContext {
     native_signature: Option<String>,
     /// 用量追踪器（可选）
     usage_tracker: Option<Arc<UsageTracker>>,
+    /// RPM/TPM 追踪器（可选，用于记录 token 速度）
+    rpm_tracker: Option<Arc<crate::model::rpm::RpmTracker>>,
     /// API Key ID（用于用量记录）
     api_key_id: Option<u32>,
     /// 账号 ID（用于用量记录）
@@ -699,6 +701,7 @@ impl StreamContext {
             native_reasoning: false,
             native_signature: None,
             usage_tracker: None,
+            rpm_tracker: None,
             api_key_id: None,
             credential_id: None,
             client_ip: None,
@@ -736,6 +739,12 @@ impl StreamContext {
         self.api_key_id = api_key_id;
         self.credential_id = credential_id;
         self.client_ip = client_ip;
+        self
+    }
+
+    /// 设置 RPM/TPM 追踪器（用于记录 token 速度）
+    pub fn with_rpm_tracker(mut self, tracker: Option<Arc<crate::model::rpm::RpmTracker>>) -> Self {
+        self.rpm_tracker = tracker;
         self
     }
 
@@ -1606,6 +1615,11 @@ impl StreamContext {
                 report_cache_creation,
             );
         }
+        // 记录 TPM（token 速度）：input+output，全局 + per-key + per-credential
+        if let Some(rpm) = &self.rpm_tracker {
+            let toks = (final_input_tokens.max(0) as u64) + (self.output_tokens.max(0) as u64);
+            rpm.record_tokens(self.api_key_id, self.credential_id, toks);
+        }
         // 流式 SSE 路径暂未接入 fingerprint，cache_creation 不区分 5m/1h tier，
         // 这里把 report_cache_creation 全部归到 5m（与非流式 metering Layer 1 一致）
         let report_creation_5m = report_cache_creation;
@@ -1675,6 +1689,12 @@ impl BufferedStreamContext {
         self.inner = self
             .inner
             .with_usage_tracking(tracker, api_key_id, credential_id, client_ip);
+        self
+    }
+
+    /// 设置 RPM/TPM 追踪器（用于记录 token 速度）
+    pub fn with_rpm_tracker(mut self, tracker: Option<Arc<crate::model::rpm::RpmTracker>>) -> Self {
+        self.inner = self.inner.with_rpm_tracker(tracker);
         self
     }
 
@@ -1789,6 +1809,12 @@ impl BufferedStreamContext {
 /// 后端会返回 THINKING_SIGNATURE_INVALID(400)。因此假签名以此标记开头，convert_assistant_message
 /// 在转换历史时据此识别并剥离（不回传给后端），避免"首轮正常、后续轮报错"。
 pub(crate) const FAKE_SIGNATURE_MARKER: &str = "FAKESIGk2ccPROXY";
+
+/// 真实推理签名的最小长度阈值。实测后端真实签名均为 330+ 字符（加密 blob），
+/// 而中转站伪造的假签名固定 162 字符。低于此阈值的签名视为伪造/无效并在回传时剥离，
+/// 以覆盖 v2026.1.25 标记机制上线【之前】历史里遗留的、无标记的旧假签名。
+/// 误判的代价仅是该轮不接续思考（软降级），不会导致后端 400，故取保守阈值。
+pub(crate) const MIN_REAL_SIGNATURE_LEN: usize = 256;
 
 pub(crate) fn generate_fake_signature() -> String {
     const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

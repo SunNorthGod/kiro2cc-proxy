@@ -17,6 +17,7 @@ import type {
   RpmSnapshot,
   UsageRecordsResponse,
   DailySummary,
+  OverviewResponse,
   CredentialDaySummary,
   ThrottleLogsResponse,
   FailureLogsResponse,
@@ -246,6 +247,12 @@ export async function getCredentialTodaySummary(
 // 获取实时 RPM 数据
 export async function getRpm(): Promise<RpmSnapshot> {
   const { data } = await api.get<RpmSnapshot>('/rpm')
+  return data
+}
+
+// 获取首页概览聚合数据
+export async function getOverview(): Promise<OverviewResponse> {
+  const { data } = await api.get<OverviewResponse>('/overview')
   return data
 }
 

@@ -180,6 +180,39 @@ export interface RpmSnapshot {
   global: number
   byCredential: Record<string, number>
   byApiKey: Record<string, number>
+  /** 全局 TPM（最近 60 秒处理的 token 总量，input+output） */
+  tokensPerMin?: number
+  tokensByCredential?: Record<string, number>
+  tokensByApiKey?: Record<string, number>
+  /** sticky 路由缓存命中/未命中（/rpm 一并返回） */
+  stickyHits?: number
+  stickyMisses?: number
+}
+
+// 首页概览（GET /api/admin/overview）
+export interface OverviewTotals {
+  totalRequests: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCredits: number
+  totalCreditsSaved: number
+  totalCacheReadTokens: number
+  totalCacheCreationTokens: number
+}
+
+export interface ApiKeyUsageBrief {
+  apiKeyId: number
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  credits: number
+}
+
+export interface OverviewResponse {
+  allTime: OverviewTotals
+  daily: DailySummary[]        // 近 30 天，按日期升序
+  byModel: ModelUsage[]        // 全历史，按 credits 降序
+  byApiKey: ApiKeyUsageBrief[] // 全历史，按 credits 降序
 }
 
 // 单条原始请求记录
@@ -211,11 +244,13 @@ export interface UsageRecordsResponse {
 
 // 每日用量汇总
 export interface DailySummary {
-  date: string          // "2026-05-21" UTC
+  date: string          // "2026-05-21" CST
   totalRequests: number
   totalCost: number
   totalCredits: number
   totalCreditsSaved?: number
+  totalInputTokens?: number
+  totalOutputTokens?: number
 }
 
 // 单账号在某 CST 日期的用量汇总（后端 /credentials/:id/usage/today）

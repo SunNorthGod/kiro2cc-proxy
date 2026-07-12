@@ -663,6 +663,49 @@ pub struct DailySummary {
     pub total_credits: f64,
     /// 节省的 credits 总量（仅含有 credits_used 的记录）
     pub total_credits_saved: f64,
+    /// 总输入 tokens（用于历史 token 趋势图）
+    #[serde(default)]
+    pub total_input_tokens: i64,
+    /// 总输出 tokens
+    #[serde(default)]
+    pub total_output_tokens: i64,
+}
+
+/// 首页概览：全历史总量 + 近 N 天序列 + 模型分布 + 按 API Key 汇总（单次扫描聚合）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewResponse {
+    pub all_time: OverviewTotals,
+    /// 近 N 天，按日期升序
+    pub daily: Vec<DailySummary>,
+    /// 全历史按模型分布（按 credits 降序）
+    pub by_model: Vec<ModelUsage>,
+    /// 全历史按 API Key 汇总（按 credits 降序，供 Top 排行）
+    pub by_api_key: Vec<ApiKeyUsageBrief>,
+}
+
+/// 全历史累计总量
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct OverviewTotals {
+    pub total_requests: u64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_credits: f64,
+    pub total_credits_saved: f64,
+    pub total_cache_read_tokens: i64,
+    pub total_cache_creation_tokens: i64,
+}
+
+/// 单个 API Key 的精简汇总（首页 Top 排行用）
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyUsageBrief {
+    pub api_key_id: u32,
+    pub requests: u64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub credits: f64,
 }
 
 /// 指定账号在指定 CST 日期的用量汇总
@@ -743,7 +786,7 @@ impl UsageTracker {
         use std::collections::BTreeMap;
         let cst = FixedOffset::east_opt(8 * 3600).unwrap();
         let records = self.records.read();
-        let mut map: BTreeMap<String, (u64, f64, f64, f64)> = BTreeMap::new();
+        let mut map: BTreeMap<String, (u64, f64, f64, f64, i64, i64)> = BTreeMap::new();
         for r in records.iter() {
             let date = r
                 .created_at
@@ -759,19 +802,131 @@ impl UsageTracker {
             if let Some(cu) = r.credits_used {
                 entry.3 += r.estimated_cost * get_k_ref(&r.model) - cu;
             }
+            entry.4 += r.input_tokens as i64;
+            entry.5 += r.output_tokens as i64;
         }
         let mut result: Vec<DailySummary> = map
             .into_iter()
-            .map(|(date, (reqs, cost, credits, saved))| DailySummary {
+            .map(|(date, (reqs, cost, credits, saved, it, ot))| DailySummary {
                 date,
                 total_requests: reqs,
                 total_cost: cost,
                 total_credits: credits,
                 total_credits_saved: saved,
+                total_input_tokens: it,
+                total_output_tokens: ot,
             })
             .collect();
         result.sort_by(|a, b| b.date.cmp(&a.date));
         result
+    }
+
+    /// 首页概览聚合：单次扫描产出全历史总量 + 近 `daily_days` 天序列 + 模型分布 + API Key 汇总。
+    pub fn get_overview(&self, daily_days: usize) -> OverviewResponse {
+        use std::collections::BTreeMap;
+        let cst = FixedOffset::east_opt(8 * 3600).unwrap();
+        let records = self.records.read();
+
+        let mut totals = OverviewTotals::default();
+        let mut by_day: BTreeMap<String, (u64, f64, f64, f64, i64, i64)> = BTreeMap::new();
+        let mut by_model: HashMap<String, (u64, i64, i64, f64, f64)> = HashMap::new();
+        let mut by_key: HashMap<u32, (u64, i64, i64, f64)> = HashMap::new();
+
+        for r in records.iter() {
+            let k_ref = get_k_ref(&r.model);
+            let credits = r.credits_used.unwrap_or(r.estimated_cost * k_ref);
+            let saved = r
+                .credits_used
+                .map(|cu| r.estimated_cost * k_ref - cu)
+                .unwrap_or(0.0);
+            let it = r.input_tokens as i64;
+            let ot = r.output_tokens as i64;
+
+            totals.total_requests += 1;
+            totals.total_input_tokens += it;
+            totals.total_output_tokens += ot;
+            totals.total_credits += credits;
+            totals.total_credits_saved += saved;
+            totals.total_cache_read_tokens += r.cache_read_input_tokens.unwrap_or(0) as i64;
+            totals.total_cache_creation_tokens +=
+                r.cache_creation_input_tokens.unwrap_or(0) as i64;
+
+            let date = r
+                .created_at
+                .with_timezone(&cst)
+                .format("%Y-%m-%d")
+                .to_string();
+            let d = by_day.entry(date).or_default();
+            d.0 += 1;
+            d.1 += r.estimated_cost;
+            d.2 += credits;
+            d.3 += saved;
+            d.4 += it;
+            d.5 += ot;
+
+            let m = by_model.entry(r.model.clone()).or_default();
+            m.0 += 1;
+            m.1 += it;
+            m.2 += ot;
+            m.3 += r.estimated_cost;
+            m.4 += credits;
+
+            let k = by_key.entry(r.api_key_id).or_default();
+            k.0 += 1;
+            k.1 += it;
+            k.2 += ot;
+            k.3 += credits;
+        }
+        drop(records);
+
+        // BTreeMap 已按日期升序；取最近 daily_days 天
+        let mut daily: Vec<DailySummary> = by_day
+            .into_iter()
+            .map(|(date, (reqs, cost, credits, saved, it, ot))| DailySummary {
+                date,
+                total_requests: reqs,
+                total_cost: cost,
+                total_credits: credits,
+                total_credits_saved: saved,
+                total_input_tokens: it,
+                total_output_tokens: ot,
+            })
+            .collect();
+        if daily.len() > daily_days {
+            daily = daily.split_off(daily.len() - daily_days);
+        }
+
+        let mut by_model_v: Vec<ModelUsage> = by_model
+            .into_iter()
+            .map(|(model, (requests, input, output, cost, credits))| ModelUsage {
+                model,
+                requests,
+                input_tokens: input,
+                output_tokens: output,
+                cost,
+                credits,
+            })
+            .collect();
+        by_model_v.sort_by(|a, b| b.credits.partial_cmp(&a.credits).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mut by_key_v: Vec<ApiKeyUsageBrief> = by_key
+            .into_iter()
+            .map(|(api_key_id, (requests, input, output, credits))| ApiKeyUsageBrief {
+                api_key_id,
+                requests,
+                input_tokens: input,
+                output_tokens: output,
+                credits,
+            })
+            .collect();
+        by_key_v.sort_by(|a, b| b.credits.partial_cmp(&a.credits).unwrap_or(std::cmp::Ordering::Equal));
+
+        OverviewResponse {
+            all_time: totals,
+            daily,
+            by_model: by_model_v,
+            by_api_key: by_key_v,
+        }
     }
 
     /// 分页查询指定 CST（UTC+8）日期的原始记录，硬限总量 2000 条
