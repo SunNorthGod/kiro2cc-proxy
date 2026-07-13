@@ -1,6 +1,6 @@
 [package]
 name = "kiro2cc-proxy"
-version = "2.6.44"
+version = "2.6.45"
 edition = "2024"
 license = "MIT"
 authors = ["Harllan He"]
@@ -36,3 +36,5 @@ subtle = "2.6"        # 常量时间比较（防止时序攻击）
 rust-embed = "8"      # 嵌入静态文件
 mime_guess = "2"      # MIME 类型推断
 dirs = "5"            # 跨平台获取用户目录
+# 图片解码 + 缩放（多图请求单张 >2000px 会被上游 Mantle 拒：IMAGE_DIMENSION_EXCEEDED）
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

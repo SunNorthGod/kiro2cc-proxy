@@ -839,7 +839,13 @@ fn process_message_content(
                             if let Some(source) = block.source
                                 && let Some(format) = get_image_format(&source.media_type)
                             {
-                                images.push(KiroImage::from_base64(format, source.data));
+                                // 多图请求里单张 >2000px 会被上游拒（IMAGE_DIMENSION_EXCEEDED），
+                                // 超限则等比缩放到 ≤2000px 再上送。
+                                let (fmt, data) = match downscale_image_if_needed(&format, &source.data) {
+                                    Some((f, d)) => (f, d),
+                                    None => (format, source.data),
+                                };
+                                images.push(KiroImage::from_base64(fmt, data));
                             }
                         }
                         "document" => {
@@ -1142,6 +1148,46 @@ fn get_image_format(media_type: &str) -> Option<String> {
         "image/webp" => Some("webp".to_string()),
         _ => None,
     }
+}
+
+/// 多图请求上游限制：单张图片任一维度不得超过 2000px（否则 IMAGE_DIMENSION_EXCEEDED / 400）。
+/// 若图片任一边 >2000px，则等比缩放到长边=2000px 后重新编码；否则返回 None（不动原图）。
+/// 返回 `(新格式, 新base64)`——webp/gif 等重编码为 png（image crate 不保证其编码），jpeg 仍编码为 jpeg。
+fn downscale_image_if_needed(format: &str, b64_data: &str) -> Option<(String, String)> {
+    use base64::engine::general_purpose::STANDARD;
+    const MAX_DIM: u32 = 2000;
+
+    let bytes = STANDARD.decode(b64_data).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?;
+    let (w, h) = (img.width(), img.height());
+    if w <= MAX_DIM && h <= MAX_DIM {
+        return None; // 未超限，保持原图（避免无谓重编码/画质损失）
+    }
+
+    let scale = MAX_DIM as f32 / w.max(h) as f32;
+    let nw = ((w as f32 * scale).round() as u32).max(1);
+    let nh = ((h as f32 * scale).round() as u32).max(1);
+    let resized = img.resize(nw, nh, image::imageops::FilterType::Triangle);
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let out_fmt = if format.eq_ignore_ascii_case("jpeg") || format.eq_ignore_ascii_case("jpg") {
+        resized
+            .to_rgb8()
+            .write_to(&mut buf, image::ImageFormat::Jpeg)
+            .ok()?;
+        "jpeg".to_string()
+    } else {
+        // png / gif / webp 一律重编码为 png（无损，且 image crate 对 png 编码稳定）
+        resized.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+        "png".to_string()
+    };
+
+    let out_b64 = STANDARD.encode(buf.get_ref());
+    tracing::info!(
+        "[image] 缩放图片 {}x{} -> {}x{} ({} -> {})",
+        w, h, nw, nh, format, out_fmt
+    );
+    Some((out_fmt, out_b64))
 }
 
 /// 提取工具结果内容
