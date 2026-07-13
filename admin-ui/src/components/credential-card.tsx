@@ -169,7 +169,8 @@ export function CredentialCard({
                     {credential.nickname || credential.email || `账号 #${credential.id}`}
                   </span>
                   <HealthBadge status={credential.healthStatus} />
-                  {credential.disabled && <Badge variant="destructive">已禁用</Badge>}
+                  {/* healthStatus 为 disabled 时 HealthBadge 已显示"已禁用"，避免重复徽章 */}
+                  {credential.disabled && credential.healthStatus !== 'disabled' && <Badge variant="destructive">已禁用</Badge>}
                 </div>
 
                 {/* 行2：账号 + 最后调用 */}

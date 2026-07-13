@@ -53,6 +53,9 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
   const createCredDropdownRef = useRef<HTMLDivElement>(null)
   const editCredDropdownRef = useRef<HTMLDivElement>(null)
 
+  // 额度快捷档位（credits），创建 / 编辑 / 加额度共用
+  const creditTiers = [100, 1000, 2000, 3000, 5000, 10000]
+
   const quickDurationOptions = [
     { label: '1 小时', value: 1, unit: 'hours' as const },
     { label: '3 小时', value: 3, unit: 'hours' as const },
@@ -773,7 +776,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
               <div>
                 <label className="text-sm font-medium">额度上限（Kiro credits）</label>
                 <div className="flex flex-wrap gap-2 mt-2">
-                  {[1000, 2000, 5000, 10000].map((amount) => (
+                  {creditTiers.map((amount) => (
                     <Button
                       key={amount}
                       type="button"
@@ -939,7 +942,21 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
             ) : (
               <div>
                 <label className="text-sm font-medium">额度上限（Kiro credits）</label>
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {creditTiers.map((amount) => (
+                    <Button
+                      key={amount}
+                      type="button"
+                      size="sm"
+                      variant={editSpendingLimit === amount ? 'default' : 'outline'}
+                      onClick={() => setEditSpendingLimit(amount)}
+                    >
+                      {amount}
+                    </Button>
+                  ))}
+                </div>
                 <div className="flex items-center gap-2 mt-2">
+                  <span className="text-sm text-muted-foreground">自定义</span>
                   <Input
                     type="number"
                     min={1}
@@ -995,7 +1012,7 @@ export function ApiKeysPanel({ onViewDetail }: ApiKeysPanelProps) {
               {topUpIsCredits ? '增加额度（credits）' : '增加天数'}
             </label>
             <div className="flex flex-wrap gap-2">
-              {(topUpIsCredits ? [1000, 2000, 5000, 10000] : [7, 30, 90, 180]).map((amount) => (
+              {(topUpIsCredits ? creditTiers : [7, 30, 90, 180]).map((amount) => (
                 <Button
                   key={amount}
                   type="button"
