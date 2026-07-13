@@ -2558,6 +2558,41 @@ impl MultiTokenManager {
                 .ok_or_else(|| anyhow::anyhow!("账号不存在: {}", id))?
         };
 
+        // API Key 账号：直接用 kiroApiKey 作 Bearer，无需刷新/profileArn（否则会误触发刷新守卫报错）
+        if credentials.is_api_key_credential() {
+            let token = credentials
+                .kiro_api_key
+                .clone()
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("API Key 账号缺少 kiroApiKey"))?;
+            let effective_proxy = credentials.effective_proxy(self.proxy.as_ref());
+            let usage_limits =
+                get_usage_limits(&credentials, &self.config, &token, effective_proxy.as_ref())
+                    .await?;
+            // 更新订阅等级（仅在变化时持久化）
+            if let Some(subscription_title) = usage_limits.subscription_title() {
+                let changed = {
+                    let mut entries = self.entries.lock();
+                    if let Some(entry) = entries.iter_mut().find(|e| e.id == id) {
+                        let old = entry.credentials.subscription_title.clone();
+                        if old.as_deref() != Some(subscription_title) {
+                            entry.credentials.subscription_title =
+                                Some(subscription_title.to_string());
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+                if changed && let Err(e) = self.persist_credentials() {
+                    tracing::warn!("订阅等级更新后持久化失败（不影响本次请求）: {}", e);
+                }
+            }
+            return Ok(usage_limits);
+        }
+
         // 检查是否需要刷新 token
         let needs_refresh = is_token_expired(&credentials) || is_token_expiring_soon(&credentials);
 

@@ -1,0 +1,343 @@
+// Copyright (c) 2026 Harllan He. Licensed under MIT.
+import { useState } from 'react'
+import { toast } from 'sonner'
+import { DialogFooter } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { useAddCredential } from '@/hooks/use-credentials'
+import { extractErrorMessage } from '@/lib/utils'
+
+type AuthMethod = 'social' | 'idc' | 'external_idp'
+
+interface ManualAddPanelProps {
+  onClose: () => void
+}
+
+/** 手动添加单个账号（social / idc / external_idp）。 */
+export function ManualAddPanel({ onClose }: ManualAddPanelProps) {
+  const [refreshToken, setRefreshToken] = useState('')
+  const [email, setEmail] = useState('')
+  const [authMethod, setAuthMethod] = useState<AuthMethod>('social')
+  const [authRegion, setAuthRegion] = useState('')
+  const [apiRegion, setApiRegion] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [tokenEndpoint, setTokenEndpoint] = useState('')
+  const [issuerUrl, setIssuerUrl] = useState('')
+  const [scopes, setScopes] = useState('')
+  const [profileArn, setProfileArn] = useState('')
+  const [priority, setPriority] = useState('0')
+  const [machineId, setMachineId] = useState('')
+  const [proxyUrl, setProxyUrl] = useState('')
+  const [proxyUsername, setProxyUsername] = useState('')
+  const [proxyPassword, setProxyPassword] = useState('')
+
+  const { mutate, isPending } = useAddCredential()
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+
+    if (!refreshToken.trim()) {
+      toast.error('请输入 Refresh Token')
+      return
+    }
+    if (authMethod === 'idc' && (!clientId.trim() || !clientSecret.trim())) {
+      toast.error('IdC/Builder-ID/IAM 认证需要填写 Client ID 和 Client Secret')
+      return
+    }
+    if (
+      authMethod === 'external_idp' &&
+      (!clientId.trim() || (!tokenEndpoint.trim() && !issuerUrl.trim()))
+    ) {
+      toast.error('External IdP 认证需要 Client ID，以及 Token Endpoint（或 Issuer URL）')
+      return
+    }
+
+    mutate(
+      {
+        refreshToken: refreshToken.trim(),
+        authMethod,
+        email: email.trim() || undefined,
+        authRegion: authRegion.trim() || undefined,
+        apiRegion: apiRegion.trim() || undefined,
+        clientId: clientId.trim() || undefined,
+        clientSecret: clientSecret.trim() || undefined,
+        tokenEndpoint: tokenEndpoint.trim() || undefined,
+        issuerUrl: issuerUrl.trim() || undefined,
+        scopes: scopes.trim() || undefined,
+        profileArn: profileArn.trim() || undefined,
+        priority: parseInt(priority) || 0,
+        machineId: machineId.trim() || undefined,
+        proxyUrl: proxyUrl.trim() || undefined,
+        proxyUsername: proxyUsername.trim() || undefined,
+        proxyPassword: proxyPassword.trim() || undefined,
+      },
+      {
+        onSuccess: (data) => {
+          toast.success(data.message)
+          onClose()
+        },
+        onError: (error: unknown) => {
+          toast.error(`添加失败: ${extractErrorMessage(error)}`)
+        },
+      }
+    )
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
+      <div className="space-y-4 py-4 overflow-y-auto flex-1 pr-1">
+        <div className="space-y-2">
+          <label htmlFor="refreshToken" className="text-sm font-medium">
+            Refresh Token <span className="text-red-500">*</span>
+          </label>
+          <Input
+            id="refreshToken"
+            type="password"
+            placeholder="请输入 Refresh Token"
+            value={refreshToken}
+            onChange={(e) => setRefreshToken(e.target.value)}
+            disabled={isPending}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="email" className="text-sm font-medium">
+            用户名 / 邮箱
+          </label>
+          <Input
+            id="email"
+            type="text"
+            placeholder="请输入账号邮箱（用于标识账号）"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            disabled={isPending}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="authMethod" className="text-sm font-medium">
+            认证方式
+          </label>
+          <select
+            id="authMethod"
+            value={authMethod}
+            onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
+            disabled={isPending}
+            className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <option value="social">Social</option>
+            <option value="idc">IdC/Builder-ID/IAM</option>
+            <option value="external_idp">External IdP（企业版 / 微软 Entra 等）</option>
+          </select>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium">Region 配置</label>
+          <div className="grid grid-cols-2 gap-2">
+            <Input
+              id="authRegion"
+              placeholder="Auth Region"
+              value={authRegion}
+              onChange={(e) => setAuthRegion(e.target.value)}
+              disabled={isPending}
+            />
+            <Input
+              id="apiRegion"
+              placeholder="API Region"
+              value={apiRegion}
+              onChange={(e) => setApiRegion(e.target.value)}
+              disabled={isPending}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            均可留空使用全局配置。Auth Region 用于 Token 刷新，API Region 用于 API 请求
+          </p>
+        </div>
+
+        {authMethod === 'idc' && (
+          <>
+            <div className="space-y-2">
+              <label htmlFor="clientId" className="text-sm font-medium">
+                Client ID <span className="text-red-500">*</span>
+              </label>
+              <Input
+                id="clientId"
+                placeholder="请输入 Client ID"
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="clientSecret" className="text-sm font-medium">
+                Client Secret <span className="text-red-500">*</span>
+              </label>
+              <Input
+                id="clientSecret"
+                type="password"
+                placeholder="请输入 Client Secret"
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="profileArn" className="text-sm font-medium">
+                Profile ARN{' '}
+                <span className="text-muted-foreground text-xs">(企业版可选，留空自动获取)</span>
+              </label>
+              <Input
+                id="profileArn"
+                type="text"
+                placeholder="arn:aws:codewhisperer:us-east-1:...:profile/... （留空则首次请求自动获取）"
+                value={profileArn}
+                onChange={(e) => setProfileArn(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+          </>
+        )}
+
+        {authMethod === 'external_idp' && (
+          <>
+            <div className="space-y-2">
+              <label htmlFor="extClientId" className="text-sm font-medium">
+                Client ID <span className="text-red-500">*</span>
+              </label>
+              <Input
+                id="extClientId"
+                placeholder="OIDC Client ID（如微软 Entra 应用 ID）"
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="tokenEndpoint" className="text-sm font-medium">
+                Token Endpoint <span className="text-red-500">*</span>
+              </label>
+              <Input
+                id="tokenEndpoint"
+                placeholder="https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token"
+                value={tokenEndpoint}
+                onChange={(e) => setTokenEndpoint(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="issuerUrl" className="text-sm font-medium">
+                Issuer URL{' '}
+                <span className="text-muted-foreground text-xs">(可选，用于自动发现 Token Endpoint)</span>
+              </label>
+              <Input
+                id="issuerUrl"
+                placeholder="https://login.microsoftonline.com/<tenant>/v2.0"
+                value={issuerUrl}
+                onChange={(e) => setIssuerUrl(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="scopes" className="text-sm font-medium">
+                Scopes{' '}
+                <span className="text-muted-foreground text-xs">(空格分隔，建议含 offline_access)</span>
+              </label>
+              <Input
+                id="scopes"
+                placeholder="api://<app>/codewhisperer:conversations ... offline_access"
+                value={scopes}
+                onChange={(e) => setScopes(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="extProfileArn" className="text-sm font-medium">
+                Profile ARN <span className="text-muted-foreground text-xs">(留空自动获取)</span>
+              </label>
+              <Input
+                id="extProfileArn"
+                placeholder="留空则首次请求自动从 management.kiro.dev 获取"
+                value={profileArn}
+                onChange={(e) => setProfileArn(e.target.value)}
+                disabled={isPending}
+              />
+            </div>
+          </>
+        )}
+
+        <div className="space-y-2">
+          <label htmlFor="priority" className="text-sm font-medium">
+            优先级
+          </label>
+          <Input
+            id="priority"
+            type="number"
+            min="0"
+            placeholder="数字越小优先级越高"
+            value={priority}
+            onChange={(e) => setPriority(e.target.value)}
+            disabled={isPending}
+          />
+          <p className="text-xs text-muted-foreground">数字越小优先级越高，默认为 0</p>
+        </div>
+
+        <div className="space-y-2">
+          <label htmlFor="machineId" className="text-sm font-medium">
+            Machine ID
+          </label>
+          <Input
+            id="machineId"
+            placeholder="留空使用配置中字段, 否则由刷新Token自动派生"
+            value={machineId}
+            onChange={(e) => setMachineId(e.target.value)}
+            disabled={isPending}
+          />
+          <p className="text-xs text-muted-foreground">
+            可选，64 位十六进制字符串，留空使用配置中字段, 否则由刷新Token自动派生
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium">代理配置</label>
+          <Input
+            id="proxyUrl"
+            placeholder='代理 URL（留空使用全局配置，"direct" 不使用代理）'
+            value={proxyUrl}
+            onChange={(e) => setProxyUrl(e.target.value)}
+            disabled={isPending}
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <Input
+              id="proxyUsername"
+              placeholder="代理用户名"
+              value={proxyUsername}
+              onChange={(e) => setProxyUsername(e.target.value)}
+              disabled={isPending}
+            />
+            <Input
+              id="proxyPassword"
+              type="password"
+              placeholder="代理密码"
+              value={proxyPassword}
+              onChange={(e) => setProxyPassword(e.target.value)}
+              disabled={isPending}
+            />
+          </div>
+          <p className="text-xs text-muted-foreground">
+            留空使用全局代理。输入 "direct" 可显式不使用代理
+          </p>
+        </div>
+      </div>
+
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onClose} disabled={isPending}>
+          取消
+        </Button>
+        <Button type="submit" disabled={isPending}>
+          {isPending ? '添加中...' : '添加'}
+        </Button>
+      </DialogFooter>
+    </form>
+  )
+}

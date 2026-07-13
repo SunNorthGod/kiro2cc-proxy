@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Server, Plus, FileUp, Trash2, RotateCcw, CheckCircle2, Key, Settings, BarChart2, ScrollText, LogIn, LayoutDashboard } from 'lucide-react'
+import { RefreshCw, LogOut, Server, Plus, Trash2, RotateCcw, CheckCircle2, Key, Settings, BarChart2, ScrollText, LayoutDashboard } from 'lucide-react'
 import kiroIcon from '@/assets/kiro-icon.png'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -10,9 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CredentialCard } from '@/components/credential-card'
 import { BalanceDialog } from '@/components/balance-dialog'
-import { AddCredentialDialog } from '@/components/add-credential-dialog'
-import { DeviceLoginDialog } from '@/components/device-login-dialog'
-import { KamImportDialog } from '@/components/kam-import-dialog'
+import { AddAccountDialog } from '@/components/add-account-dialog'
 import { BatchVerifyDialog, type VerifyResult } from '@/components/batch-verify-dialog'
 import { ApiKeysPanel } from '@/components/api-keys-panel'
 import { ApiKeyDetailPage } from '@/components/api-key-detail-page'
@@ -42,8 +40,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [selectedCredentialId, setSelectedCredentialId] = useState<number | null>(null)
   const [balanceDialogOpen, setBalanceDialogOpen] = useState(false)
   const [addDialogOpen, setAddDialogOpen] = useState(false)
-  const [deviceLoginDialogOpen, setDeviceLoginDialogOpen] = useState(false)
-  const [kamImportDialogOpen, setKamImportDialogOpen] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [verifyDialogOpen, setVerifyDialogOpen] = useState(false)
   const [verifying, setVerifying] = useState(false)
@@ -916,14 +912,6 @@ export function Dashboard({ onLogout }: DashboardProps) {
                   <span className="hidden sm:inline">清除已禁用</span>
                 </Button>
               )}
-              <Button onClick={() => setKamImportDialogOpen(true)} size="sm" variant="outline">
-                <FileUp className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">批量导入 (KAM/kiro-go/本地登录)</span>
-              </Button>
-              <Button onClick={() => setDeviceLoginDialogOpen(true)} size="sm" variant="outline">
-                <LogIn className="h-4 w-4 sm:mr-2" />
-                <span className="hidden sm:inline">SSO 登录</span>
-              </Button>
               <Button onClick={() => setAddDialogOpen(true)} size="sm">
                 <Plus className="h-4 w-4 sm:mr-2" />
                 <span className="hidden sm:inline">添加账号</span>
@@ -995,22 +983,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
         onOpenChange={setBalanceDialogOpen}
       />
 
-      {/* 添加凭据对话框 */}
-      <AddCredentialDialog
+      {/* 统一「添加账号」对话框：手动 / API Key / 批量导入 / SSO 登录 */}
+      <AddAccountDialog
         open={addDialogOpen}
         onOpenChange={setAddDialogOpen}
-      />
-
-      {/* SSO 设备登录对话框 */}
-      <DeviceLoginDialog
-        open={deviceLoginDialogOpen}
-        onOpenChange={setDeviceLoginDialogOpen}
-      />
-
-      {/* 统一批量导入对话框（KAM / kiro-go / 本地登录） */}
-      <KamImportDialog
-        open={kamImportDialogOpen}
-        onOpenChange={setKamImportDialogOpen}
       />
 
       {/* 批量验活对话框 */}
