@@ -53,6 +53,12 @@ pub struct CredentialStatusItem {
     pub api_region: Option<String>,
     /// refreshToken 的 SHA-256 哈希（用于前端重复检测）
     pub refresh_token_hash: Option<String>,
+    /// kiroApiKey 的 SHA-256 哈希（仅 API Key 账号，用于前端去重）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_hash: Option<String>,
+    /// kiroApiKey 的脱敏展示（仅 API Key 账号）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masked_api_key: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
     /// 用户昵称/备注名（用于前端显示）
@@ -93,8 +99,13 @@ pub struct SetPriorityRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AddCredentialRequest {
-    /// 刷新令牌（必填）
-    pub refresh_token: String,
+    /// 刷新令牌（social/idc/external_idp 必填；api_key 账号留空）
+    #[serde(default)]
+    pub refresh_token: Option<String>,
+
+    /// Kiro API Key（api_key 账号必填，格式 ksk_xxxx）
+    #[serde(default)]
+    pub kiro_api_key: Option<String>,
 
     /// 认证方式（可选，默认 social）
     #[serde(default = "default_auth_method")]

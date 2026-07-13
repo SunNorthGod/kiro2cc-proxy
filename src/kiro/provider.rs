@@ -251,6 +251,16 @@ impl KiroProvider {
         }
     }
 
+    /// 为 API Key（headless）账号追加 `tokentype: API_KEY` 头。
+    ///
+    /// 告知 Kiro 后端该 Bearer 是原生 Kiro API Key（ksk_），而非 OAuth access token。
+    /// 与 external_idp 互斥（两者 authMethod 不同）。
+    fn apply_api_key_headers(headers: &mut HeaderMap, credentials: &KiroCredentials) {
+        if credentials.is_api_key_credential() {
+            headers.insert("tokentype", HeaderValue::from_static("API_KEY"));
+        }
+    }
+
     /// 构建请求头
     ///
     /// # Arguments
@@ -316,6 +326,7 @@ impl KiroProvider {
             HeaderValue::from_str(&format!("Bearer {}", ctx.token)).unwrap(),
         );
         Self::apply_external_idp_headers(&mut headers, &ctx.credentials);
+        Self::apply_api_key_headers(&mut headers, &ctx.credentials);
         Ok(headers)
     }
 
@@ -363,6 +374,7 @@ impl KiroProvider {
             HeaderValue::from_str(&format!("Bearer {}", ctx.token)).unwrap(),
         );
         Self::apply_external_idp_headers(&mut headers, &ctx.credentials);
+        Self::apply_api_key_headers(&mut headers, &ctx.credentials);
         Ok(headers)
     }
 

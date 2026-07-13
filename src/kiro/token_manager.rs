@@ -145,6 +145,11 @@ pub(crate) async fn refresh_token(
     config: &Config,
     proxy: Option<&ProxyConfig>,
 ) -> anyhow::Result<KiroCredentials> {
+    // API Key 账号不支持刷新：契约级拦截（正常路径已在 try_ensure_token 分流，此处兜底）
+    if credentials.is_api_key_credential() {
+        bail!("API Key 账号不支持刷新 Token（直接使用 kiroApiKey）");
+    }
+
     validate_refresh_token(credentials)?;
 
     // 根据 auth_method 选择刷新方式
@@ -520,6 +525,10 @@ pub(crate) async fn get_usage_limits(
     if is_ext {
         // 告知 Kiro 控制面该 Bearer 是客户 IdP 直签 token
         req = req.header("TokenType", "EXTERNAL_IDP");
+    }
+    if credentials.is_api_key_credential() {
+        // 告知 Kiro 后端该 Bearer 是原生 Kiro API Key（ksk_）
+        req = req.header("tokentype", "API_KEY");
     }
     let response = req.send().await?;
 
@@ -1050,6 +1059,12 @@ pub struct CredentialEntrySnapshot {
     pub expires_at: Option<String>,
     /// refreshToken 的 SHA-256 哈希（用于前端重复检测）
     pub refresh_token_hash: Option<String>,
+    /// kiroApiKey 的 SHA-256 哈希（仅 API Key 账号，用于前端去重）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_hash: Option<String>,
+    /// kiroApiKey 的脱敏展示（仅 API Key 账号，如 ksk_VLPm…ICQw）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub masked_api_key: Option<String>,
     /// 用户邮箱（用于前端显示）
     pub email: Option<String>,
     /// 用户昵称/备注名（用于前端显示）
@@ -1067,6 +1082,18 @@ pub struct CredentialEntrySnapshot {
     pub health_status: HealthStatus,
     /// 被限流次数（429 响应，累计）
     pub throttle_count: u64,
+}
+
+/// 脱敏展示 API Key：保留前缀 + 后 4 位，如 `ksk_VLPm…ICQw`
+pub(crate) fn mask_api_key(key: &str) -> String {
+    let key = key.trim();
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 12 {
+        return "ksk_****".to_string();
+    }
+    let head: String = chars.iter().take(8).collect();
+    let tail: String = chars.iter().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("{}…{}", head, tail)
 }
 
 /// 账号管理器状态快照
@@ -1767,6 +1794,20 @@ impl MultiTokenManager {
         id: u64,
         credentials: &KiroCredentials,
     ) -> anyhow::Result<CallContext> {
+        // API Key 账号：直接用 kiroApiKey 作为 Bearer Token，无需刷新/过期检查/profileArn 自愈。
+        if credentials.is_api_key_credential() {
+            let token = credentials
+                .kiro_api_key
+                .clone()
+                .filter(|k| !k.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("API Key 账号缺少 kiroApiKey"))?;
+            return Ok(CallContext {
+                id,
+                credentials: credentials.clone(),
+                token,
+            });
+        }
+
         // 第一次检查（无锁）：快速判断是否需要刷新
         let needs_refresh = is_token_expired(credentials) || is_token_expiring_soon(credentials);
 
@@ -2425,6 +2466,12 @@ impl MultiTokenManager {
                     api_region: e.credentials.api_region.clone(),
                     expires_at: e.credentials.expires_at.clone(),
                     refresh_token_hash: e.credentials.refresh_token.as_deref().map(sha256_hex),
+                    api_key_hash: e.credentials.kiro_api_key.as_deref().map(sha256_hex),
+                    masked_api_key: e
+                        .credentials
+                        .kiro_api_key
+                        .as_deref()
+                        .map(mask_api_key),
                     email: e.credentials.email.clone(),
                     nickname: e.credentials.nickname.clone(),
                     success_count: e.success_count,
@@ -2634,35 +2681,68 @@ impl MultiTokenManager {
     /// - `Ok(u64)` - 新账号 ID
     /// - `Err(_)` - 验证失败或添加失败
     pub async fn add_credential(&self, new_cred: KiroCredentials) -> anyhow::Result<u64> {
-        // 1. 基本验证
-        validate_refresh_token(&new_cred)?;
+        let is_api_key = new_cred.is_api_key_credential();
 
-        // 2. 基于 refreshToken 的 SHA-256 哈希检测重复
-        let new_refresh_token = new_cred
-            .refresh_token
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("缺少 refreshToken"))?;
-        let new_refresh_token_hash = sha256_hex(new_refresh_token);
-        let duplicate_exists = {
-            let entries = self.entries.lock();
-            entries.iter().any(|entry| {
-                entry
-                    .credentials
-                    .refresh_token
-                    .as_deref()
-                    .map(sha256_hex)
-                    .as_deref()
-                    == Some(new_refresh_token_hash.as_str())
-            })
-        };
-        if duplicate_exists {
-            anyhow::bail!("账号已存在（refreshToken 重复）");
+        // 1. 基本验证
+        if is_api_key {
+            let api_key = new_cred
+                .kiro_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("API Key 账号缺少 kiroApiKey"))?;
+            let _ = api_key;
+        } else {
+            validate_refresh_token(&new_cred)?;
         }
 
-        // 3. 尝试刷新 Token 验证账号有效性
-        let effective_proxy = new_cred.effective_proxy(self.proxy.as_ref());
-        let mut validated_cred =
-            refresh_token(&new_cred, &self.config, effective_proxy.as_ref()).await?;
+        // 2. 基于哈希检测重复（API Key 用 kiroApiKey 哈希，其余用 refreshToken 哈希）
+        if is_api_key {
+            let new_hash = sha256_hex(new_cred.kiro_api_key.as_deref().unwrap().trim());
+            let dup = {
+                let entries = self.entries.lock();
+                entries.iter().any(|e| {
+                    e.credentials
+                        .kiro_api_key
+                        .as_deref()
+                        .map(|k| sha256_hex(k.trim()))
+                        .as_deref()
+                        == Some(new_hash.as_str())
+                })
+            };
+            if dup {
+                anyhow::bail!("账号已存在（kiroApiKey 重复）");
+            }
+        } else {
+            let new_refresh_token = new_cred
+                .refresh_token
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("缺少 refreshToken"))?;
+            let new_refresh_token_hash = sha256_hex(new_refresh_token);
+            let duplicate_exists = {
+                let entries = self.entries.lock();
+                entries.iter().any(|entry| {
+                    entry
+                        .credentials
+                        .refresh_token
+                        .as_deref()
+                        .map(sha256_hex)
+                        .as_deref()
+                        == Some(new_refresh_token_hash.as_str())
+                })
+            };
+            if duplicate_exists {
+                anyhow::bail!("账号已存在（refreshToken 重复）");
+            }
+        }
+
+        // 3. 验证账号有效性：API Key 无需网络刷新，直接采用；其余账号刷新 Token 验证
+        let mut validated_cred = if is_api_key {
+            new_cred.clone()
+        } else {
+            let effective_proxy = new_cred.effective_proxy(self.proxy.as_ref());
+            refresh_token(&new_cred, &self.config, effective_proxy.as_ref()).await?
+        };
 
         // 4. 分配新 ID
         let new_id = {
@@ -2692,6 +2772,7 @@ impl MultiTokenManager {
         validated_cred.machine_id = new_cred.machine_id;
         validated_cred.email = new_cred.email;
         validated_cred.nickname = new_cred.nickname;
+        validated_cred.kiro_api_key = new_cred.kiro_api_key;
         validated_cred.proxy_url = new_cred.proxy_url;
         validated_cred.proxy_username = new_cred.proxy_username;
         validated_cred.proxy_password = new_cred.proxy_password;

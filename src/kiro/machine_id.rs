@@ -51,6 +51,14 @@ pub fn generate_from_credentials(credentials: &KiroCredentials, config: &Config)
         return Some(normalized);
     }
 
+    // API Key 账号：基于 kiroApiKey 派生（无 refreshToken）
+    if credentials.is_api_key_credential()
+        && let Some(ref api_key) = credentials.kiro_api_key
+        && !api_key.trim().is_empty()
+    {
+        return Some(sha256_hex(&format!("KiroAPIKey/{}", api_key)));
+    }
+
     // 使用 refreshToken 生成
     if let Some(ref refresh_token) = credentials.refresh_token
         && !refresh_token.is_empty()

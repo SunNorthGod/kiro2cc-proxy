@@ -24,6 +24,8 @@ export interface CredentialStatusItem {
   email?: string
   nickname?: string
   refreshTokenHash?: string
+  apiKeyHash?: string
+  maskedApiKey?: string
   successCount: number
   lastUsedAt: string | null
   hasProxy: boolean
@@ -68,8 +70,9 @@ export interface SetPriorityRequest {
 
 // 添加凭据请求
 export interface AddCredentialRequest {
-  refreshToken: string
-  authMethod?: 'social' | 'idc' | 'external_idp'
+  refreshToken?: string
+  kiroApiKey?: string
+  authMethod?: 'social' | 'idc' | 'external_idp' | 'api_key'
   email?: string
   nickname?: string
   clientId?: string

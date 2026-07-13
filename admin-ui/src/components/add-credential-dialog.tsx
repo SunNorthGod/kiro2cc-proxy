@@ -18,10 +18,11 @@ interface AddCredentialDialogProps {
   onOpenChange: (open: boolean) => void
 }
 
-type AuthMethod = 'social' | 'idc' | 'external_idp'
+type AuthMethod = 'social' | 'idc' | 'external_idp' | 'api_key'
 
 export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogProps) {
   const [refreshToken, setRefreshToken] = useState('')
+  const [apiKeys, setApiKeys] = useState('')
   const [email, setEmail] = useState('')
   const [authMethod, setAuthMethod] = useState<AuthMethod>('social')
   const [authRegion, setAuthRegion] = useState('')
@@ -38,10 +39,12 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
   const [proxyUsername, setProxyUsername] = useState('')
   const [proxyPassword, setProxyPassword] = useState('')
 
-  const { mutate, isPending } = useAddCredential()
+  const { mutate, mutateAsync, isPending } = useAddCredential()
+  const [batchAdding, setBatchAdding] = useState(false)
 
   const resetForm = () => {
     setRefreshToken('')
+    setApiKeys('')
     setEmail('')
     setAuthMethod('social')
     setAuthRegion('')
@@ -61,6 +64,20 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+
+    // ===== API Key 模式：支持批量（每行一个 ksk_ key）=====
+    if (authMethod === 'api_key') {
+      const keys = apiKeys
+        .split(/[\r\n]+/)
+        .map((k) => k.trim())
+        .filter((k) => k.length > 0)
+      if (keys.length === 0) {
+        toast.error('请至少输入一个 Kiro API Key（ksk_ 开头），每行一个')
+        return
+      }
+      void handleBatchApiKeys(keys)
+      return
+    }
 
     // 验证必填字段
     if (!refreshToken.trim()) {
@@ -115,6 +132,46 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
     )
   }
 
+  // 批量添加 API Key：逐个提交，汇总成功/失败结果
+  const handleBatchApiKeys = async (keys: string[]) => {
+    setBatchAdding(true)
+    const basePriority = parseInt(priority) || 0
+    let ok = 0
+    const failures: string[] = []
+    for (const key of keys) {
+      try {
+        await mutateAsync({
+          kiroApiKey: key,
+          authMethod: 'api_key',
+          nickname: email.trim() || undefined,
+          priority: basePriority,
+          authRegion: authRegion.trim() || undefined,
+          apiRegion: apiRegion.trim() || undefined,
+          machineId: machineId.trim() || undefined,
+          proxyUrl: proxyUrl.trim() || undefined,
+          proxyUsername: proxyUsername.trim() || undefined,
+          proxyPassword: proxyPassword.trim() || undefined,
+        })
+        ok += 1
+      } catch (error: unknown) {
+        const masked = key.length > 12 ? `${key.slice(0, 8)}…${key.slice(-4)}` : key
+        failures.push(`${masked}: ${extractErrorMessage(error)}`)
+      }
+    }
+    setBatchAdding(false)
+
+    if (ok > 0) {
+      toast.success(`成功添加 ${ok} 个 API Key 账号${failures.length ? `，${failures.length} 个失败` : ''}`)
+    }
+    if (failures.length > 0) {
+      toast.error(`失败 ${failures.length} 个：\n${failures.slice(0, 5).join('\n')}${failures.length > 5 ? '\n…' : ''}`)
+    }
+    if (ok > 0 && failures.length === 0) {
+      onOpenChange(false)
+      resetForm()
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg max-h-[85vh] flex flex-col">
@@ -124,30 +181,58 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
 
         <form onSubmit={handleSubmit} className="flex flex-col min-h-0 flex-1">
           <div className="space-y-4 py-4 overflow-y-auto flex-1 pr-1">
-            {/* Refresh Token */}
-            <div className="space-y-2">
-              <label htmlFor="refreshToken" className="text-sm font-medium">
-                Refresh Token <span className="text-red-500">*</span>
-              </label>
-              <Input
-                id="refreshToken"
-                type="password"
-                placeholder="请输入 Refresh Token"
-                value={refreshToken}
-                onChange={(e) => setRefreshToken(e.target.value)}
-                disabled={isPending}
-              />
-            </div>
+            {/* Refresh Token（非 API Key 模式）*/}
+            {authMethod !== 'api_key' && (
+              <div className="space-y-2">
+                <label htmlFor="refreshToken" className="text-sm font-medium">
+                  Refresh Token <span className="text-red-500">*</span>
+                </label>
+                <Input
+                  id="refreshToken"
+                  type="password"
+                  placeholder="请输入 Refresh Token"
+                  value={refreshToken}
+                  onChange={(e) => setRefreshToken(e.target.value)}
+                  disabled={isPending}
+                />
+              </div>
+            )}
 
-            {/* 用户名/邮箱 */}
+            {/* Kiro API Key（API Key 模式，支持批量，每行一个）*/}
+            {authMethod === 'api_key' && (
+              <div className="space-y-2">
+                <label htmlFor="apiKeys" className="text-sm font-medium">
+                  Kiro API Key <span className="text-red-500">*</span>
+                  <span className="text-muted-foreground text-xs">（每行一个，支持批量粘贴）</span>
+                </label>
+                <textarea
+                  id="apiKeys"
+                  placeholder={'ksk_xxxxxxxxxxxx\nksk_yyyyyyyyyyyy\nksk_zzzzzzzzzzzz'}
+                  value={apiKeys}
+                  onChange={(e) => setApiKeys(e.target.value)}
+                  disabled={isPending || batchAdding}
+                  rows={6}
+                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <p className="text-xs text-muted-foreground">
+                  ksk_ 开头的 Kiro API Key，直接作为凭据使用、无需刷新。每行一个可一次添加多个。
+                </p>
+              </div>
+            )}
+
+            {/* 用户名/邮箱（API Key 模式下作为批量账号的备注名）*/}
             <div className="space-y-2">
               <label htmlFor="email" className="text-sm font-medium">
-                用户名 / 邮箱
+                {authMethod === 'api_key' ? '备注名（可选）' : '用户名 / 邮箱'}
               </label>
               <Input
                 id="email"
                 type="text"
-                placeholder="请输入账号邮箱（用于标识账号）"
+                placeholder={
+                  authMethod === 'api_key'
+                    ? '批量添加时作为各账号的备注名'
+                    : '请输入账号邮箱（用于标识账号）'
+                }
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={isPending}
@@ -169,6 +254,7 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
                 <option value="social">Social</option>
                 <option value="idc">IdC/Builder-ID/IAM</option>
                 <option value="external_idp">External IdP（企业版 / 微软 Entra 等）</option>
+                <option value="api_key">API Key（ksk_，支持批量）</option>
               </select>
             </div>
 
@@ -386,12 +472,12 @@ export function AddCredentialDialog({ open, onOpenChange }: AddCredentialDialogP
               type="button"
               variant="outline"
               onClick={() => onOpenChange(false)}
-              disabled={isPending}
+              disabled={isPending || batchAdding}
             >
               取消
             </Button>
-            <Button type="submit" disabled={isPending}>
-              {isPending ? '添加中...' : '添加'}
+            <Button type="submit" disabled={isPending || batchAdding}>
+              {isPending || batchAdding ? '添加中...' : '添加'}
             </Button>
           </DialogFooter>
         </form>

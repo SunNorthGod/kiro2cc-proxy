@@ -82,6 +82,12 @@ pub struct KiroCredentials {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
 
+    /// Kiro API Key（headless 模式，authMethod=api_key）
+    /// 格式: ksk_xxxxxxxx
+    /// 设置后直接作为 Bearer Token 使用，无需 refreshToken，也不刷新。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kiro_api_key: Option<String>,
+
     /// 用户邮箱（从 Anthropic API 获取）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
@@ -123,6 +129,8 @@ fn is_zero(value: &u32) -> bool {
 fn canonicalize_auth_method_value(value: &str) -> &str {
     if value.eq_ignore_ascii_case("builder-id") || value.eq_ignore_ascii_case("iam") {
         "idc"
+    } else if value.eq_ignore_ascii_case("api_key") || value.eq_ignore_ascii_case("apikey") {
+        "api_key"
     } else {
         value
     }
@@ -314,6 +322,23 @@ impl KiroCredentials {
             .map(|m| m.eq_ignore_ascii_case("external_idp"))
             .unwrap_or(false)
     }
+
+    /// 是否为 API Key 账号（headless 模式）。
+    ///
+    /// 这类账号直接把 `kiro_api_key`（ksk_ 开头）当作 Bearer Token 使用，
+    /// 无需 refreshToken、不刷新；请求时附带 `tokentype: API_KEY` 头。
+    /// 判定条件：显式配了 kiroApiKey，或 authMethod == api_key / apikey。
+    pub fn is_api_key_credential(&self) -> bool {
+        self.kiro_api_key
+            .as_ref()
+            .map(|k| !k.trim().is_empty())
+            .unwrap_or(false)
+            || self
+                .auth_method
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("api_key") || m.eq_ignore_ascii_case("apikey"))
+                .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
@@ -369,6 +394,7 @@ mod tests {
             auth_region: None,
             api_region: None,
             machine_id: None,
+            kiro_api_key: None,
             email: None,
             nickname: None,
             subscription_title: None,
@@ -491,6 +517,7 @@ mod tests {
             auth_region: None,
             api_region: None,
             machine_id: None,
+            kiro_api_key: None,
             email: None,
             nickname: None,
             subscription_title: None,
@@ -525,6 +552,7 @@ mod tests {
             auth_region: None,
             api_region: None,
             machine_id: None,
+            kiro_api_key: None,
             email: None,
             nickname: None,
             subscription_title: None,
@@ -641,6 +669,7 @@ mod tests {
             auth_region: None,
             api_region: None,
             machine_id: Some("c".repeat(64)),
+            kiro_api_key: None,
             email: None,
             nickname: None,
             subscription_title: None,

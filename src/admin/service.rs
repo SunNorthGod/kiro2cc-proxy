@@ -77,6 +77,8 @@ impl AdminService {
                 auth_region: entry.auth_region,
                 api_region: entry.api_region,
                 refresh_token_hash: entry.refresh_token_hash,
+                api_key_hash: entry.api_key_hash,
+                masked_api_key: entry.masked_api_key,
                 email: entry.email,
                 nickname: entry.nickname,
                 success_count: entry.success_count,
@@ -196,15 +198,44 @@ impl AdminService {
         &self,
         req: AddCredentialRequest,
     ) -> Result<AddCredentialResponse, AdminServiceError> {
+        // 规范化输入
+        let kiro_api_key = req.kiro_api_key.filter(|s| !s.trim().is_empty());
+        let refresh_token = req.refresh_token.filter(|s| !s.trim().is_empty());
+
+        // API Key 账号：显式指定 authMethod=api_key，或提供了 kiroApiKey
+        let is_api_key = kiro_api_key.is_some()
+            || req.auth_method.eq_ignore_ascii_case("api_key")
+            || req.auth_method.eq_ignore_ascii_case("apikey");
+
+        // 校验：api_key 账号必须带 kiroApiKey；其余账号必须带 refreshToken
+        if is_api_key {
+            if kiro_api_key.is_none() {
+                return Err(AdminServiceError::InvalidCredential(
+                    "API Key 账号必须提供 kiroApiKey（ksk_ 开头）".to_string(),
+                ));
+            }
+        } else if refresh_token.is_none() {
+            return Err(AdminServiceError::InvalidCredential(
+                "缺少 refreshToken".to_string(),
+            ));
+        }
+
+        let auth_method = if is_api_key {
+            "api_key".to_string()
+        } else {
+            req.auth_method
+        };
+
         // 构建账号对象
         let email = req.email.clone();
         let new_cred = KiroCredentials {
             id: None,
             access_token: None,
-            refresh_token: Some(req.refresh_token),
+            refresh_token,
+            kiro_api_key,
             profile_arn: req.profile_arn.filter(|s| !s.trim().is_empty()),
             expires_at: None,
-            auth_method: Some(req.auth_method),
+            auth_method: Some(auth_method),
             client_id: req.client_id,
             client_secret: req.client_secret,
             token_endpoint: req.token_endpoint.filter(|s| !s.trim().is_empty()),
