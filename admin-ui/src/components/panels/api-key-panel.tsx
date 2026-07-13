@@ -98,10 +98,13 @@ export function ApiKeyPanel({ onClose }: ApiKeyPanelProps) {
       })
 
       try {
+        // 昵称/用户名默认用 key 本身（便于在列表里区分每个账号）；填了备注名则用备注名
+        const label = nickname.trim() || key
         const res = await addCredential({
           kiroApiKey: key,
           authMethod: 'api_key',
-          nickname: nickname.trim() || undefined,
+          email: label,
+          nickname: label,
           priority: basePriority,
         })
 
@@ -208,11 +211,11 @@ export function ApiKeyPanel({ onClose }: ApiKeyPanelProps) {
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-2">
             <label htmlFor="apiKeyNickname" className="text-sm font-medium">
-              备注名（可选）
+              备注名（可选，留空则用 key 本身）
             </label>
             <Input
               id="apiKeyNickname"
-              placeholder="批量添加时各账号的备注名"
+              placeholder="留空则昵称/用户名都用 key"
               value={nickname}
               onChange={(e) => setNickname(e.target.value)}
               disabled={adding}

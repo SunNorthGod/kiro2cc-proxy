@@ -1,0 +1,20 @@
+# 本地快速部署用：直接打包已在本地(缓存卷)编译好的二进制，跳过 CI 的冷编译。
+# 前端 dist 已在 cargo build 时通过 rust-embed 嵌入二进制，故运行镜像只需该二进制。
+# 用法见 _ssh/fast-deploy 说明；产物二进制路径 _dist/kiro2cc-proxy（由 rust:1-alpine 构建，musl）。
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates
+
+WORKDIR /app
+COPY _dist/kiro2cc-proxy /app/kiro2cc-proxy
+
+EXPOSE 5678
+
+CMD sh -c 'mkdir -p /app/config && \
+  if [ ! -f /app/config/config.json ]; then \
+    echo "{\"apiKey\":\"${API_KEY}\",\"host\":\"${HOST:-0.0.0.0}\",\"port\":${PORT:-5678},\"adminApiKey\":\"${ADMIN_API_KEY}\"}" > /app/config/config.json; \
+  fi && \
+  if [ ! -f /app/config/credentials.json ]; then \
+    echo "[]" > /app/config/credentials.json; \
+  fi && \
+  ./kiro2cc-proxy --config /app/config/config.json --credentials /app/config/credentials.json'
