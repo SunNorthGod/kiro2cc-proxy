@@ -104,9 +104,36 @@ fn strip_reasoning_from_request_body(body: &str) -> Option<String> {
     }
 }
 
-/// 调用上游，自愈重试：若因历史 thinking 签名无效(THINKING_SIGNATURE_INVALID)被后端 400 拒绝，
-/// 则剥离请求体里全部历史 reasoning 后重试一次。让后端做签名裁判，无需在本地猜测签名有效性，
-/// 从而覆盖各种无效签名来源（伪造/过期/跨模型/历史遗留）而不误伤正常会话。
+/// 判断上游错误是否为"该模型不支持 additionalModelRequestFields"。
+/// 空 schema 模型（auto / sonnet-4.5 / opus-4.5 / sonnet-4 / haiku / deepseek / minimax /
+/// glm / qwen / fable…）或部分企业端点会返回此 400（REQUEST_BODY_INVALID）。该错误发生在
+/// 请求校验阶段（流式响应开始之前），可安全剥离该字段后重试。
+/// 与 build_additional_model_request_fields 的 schema-driven 省略互为兜底：前者尽量不发，
+/// 此处兜底覆盖注册表未预热 / 未知模型 / 上游新增模型等漏网场景。
+fn is_additional_fields_unsupported_error(err: &Error) -> bool {
+    err.to_string()
+        .contains("additionalModelRequestFields is not supported")
+}
+
+/// 剥离 Kiro 请求体顶层的 `additionalModelRequestFields`。存在则返回新 body，否则 None。
+fn strip_additional_model_request_fields_from_body(body: &str) -> Option<String> {
+    let mut v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let removed = v
+        .as_object_mut()
+        .map(|obj| obj.remove("additionalModelRequestFields").is_some())
+        .unwrap_or(false);
+    if removed {
+        serde_json::to_string(&v).ok()
+    } else {
+        None
+    }
+}
+
+/// 调用上游，自愈重试（两类请求校验期 400，均在流式响应开始前，可安全重试一次）：
+/// 1. 历史 thinking 签名无效(THINKING_SIGNATURE_INVALID)：剥离全部历史 reasoning 后重试。
+///    让后端做签名裁判，无需本地猜测签名有效性，覆盖伪造/过期/跨模型/历史遗留而不误伤正常会话。
+/// 2. 该模型不支持 additionalModelRequestFields：剥离该顶层字段后重试。兜底 schema-driven
+///    省略未覆盖的漏网场景（注册表未预热 / 未知别名 / 上游新增空 schema 模型）。
 async fn call_upstream_with_reasoning_retry(
     provider: &crate::kiro::provider::KiroProvider,
     request_body: &str,
@@ -118,23 +145,35 @@ async fn call_upstream_with_reasoning_retry(
     } else {
         provider.call_api(request_body, bound_ids).await
     };
-    match first {
-        Err(e) if is_thinking_signature_error(&e) => {
-            match strip_reasoning_from_request_body(request_body) {
-                Some(stripped) => {
-                    tracing::warn!(
-                        "上游拒绝历史 thinking 签名(THINKING_SIGNATURE_INVALID)，剥离全部 reasoning 后重试一次"
-                    );
-                    if streaming {
-                        provider.call_api_stream(&stripped, bound_ids).await
-                    } else {
-                        provider.call_api(&stripped, bound_ids).await
-                    }
-                }
-                None => Err(e),
+
+    // 计算自愈重试的请求体：命中已知的两类请求校验期 400，则剥离对应字段重试一次。
+    let stripped = match &first {
+        Err(e) if is_thinking_signature_error(e) => {
+            strip_reasoning_from_request_body(request_body).inspect(|_| {
+                tracing::warn!(
+                    "上游拒绝历史 thinking 签名(THINKING_SIGNATURE_INVALID)，剥离全部 reasoning 后重试一次"
+                );
+            })
+        }
+        Err(e) if is_additional_fields_unsupported_error(e) => {
+            strip_additional_model_request_fields_from_body(request_body).inspect(|_| {
+                tracing::warn!(
+                    "上游拒绝 additionalModelRequestFields（该模型不支持），剥离该字段后重试一次"
+                );
+            })
+        }
+        _ => None,
+    };
+
+    match stripped {
+        Some(body) => {
+            if streaming {
+                provider.call_api_stream(&body, bound_ids).await
+            } else {
+                provider.call_api(&body, bound_ids).await
             }
         }
-        other => other,
+        None => first,
     }
 }
 
@@ -298,8 +337,7 @@ fn convert_kiro_models(
 ) -> Vec<Model> {
     let fallback = build_model_list();
     let mut out = Vec::new();
-    let mut reg_entries: Vec<(String, String, Option<String>, Vec<String>, Option<String>)> =
-        Vec::new();
+    let mut reg_entries: Vec<super::converter::ModelRegistryInput> = Vec::new();
     for m in &resp.models {
         let Some(kiro_id) = m.model_id.as_deref() else {
             continue;
@@ -349,16 +387,21 @@ fn convert_kiro_models(
             model.effort_levels = eff.levels;
             model.effort_schema_path = Some(eff.schema_path);
             model.default_effort_level = eff.default_level;
+            // GPT 5.6 reasoning schema 附带 mode（standard/pro）；Claude 的 output_config 无 mode。
+            model.reasoning_modes = eff.modes;
+            model.default_reasoning_mode = eff.default_mode;
         }
-        // 登记动态注册表：上游真实 id / relay id → kiro id + effort schema，供 map_model 精确
+        // 登记动态注册表：上游真实 id / relay id → kiro id + effort/mode schema，供 map_model 精确
         // 路由与 build_additional_model_request_fields 按 schema 构造字段（新模型自动生效）。
-        reg_entries.push((
-            kiro_id.to_string(),
-            relay_id.clone(),
-            model.effort_schema_path.clone(),
-            model.effort_levels.clone(),
-            model.default_effort_level.clone(),
-        ));
+        reg_entries.push(super::converter::ModelRegistryInput {
+            kiro_id: kiro_id.to_string(),
+            relay_id: relay_id.clone(),
+            effort_schema_path: model.effort_schema_path.clone(),
+            effort_levels: model.effort_levels.clone(),
+            default_effort: model.default_effort_level.clone(),
+            modes: model.reasoning_modes.clone(),
+            default_mode: model.default_reasoning_mode.clone(),
+        });
         out.push(model);
     }
     super::converter::update_model_registry(reg_entries);
@@ -424,6 +467,9 @@ fn merge_model_lists(base: Vec<Model>, dynamic: Vec<Model>) -> Vec<Model> {
                 dyn_m.effort_levels = existing.effort_levels.clone();
                 dyn_m.effort_schema_path = existing.effort_schema_path.clone();
                 dyn_m.default_effort_level = existing.default_effort_level.clone();
+                // effort 缺失时一并保留 mode（两者同源于 effort_info，缺 effort 即缺 mode）
+                dyn_m.reasoning_modes = existing.reasoning_modes.clone();
+                dyn_m.default_reasoning_mode = existing.default_reasoning_mode.clone();
             }
             *existing = dyn_m;
         } else {
@@ -448,6 +494,8 @@ fn clone_models(src: &[Model]) -> Vec<Model> {
             copy.effort_levels = m.effort_levels.clone();
             copy.effort_schema_path = m.effort_schema_path.clone();
             copy.default_effort_level = m.default_effort_level.clone();
+            copy.reasoning_modes = m.reasoning_modes.clone();
+            copy.default_reasoning_mode = m.default_reasoning_mode.clone();
             copy
         })
         .collect()
@@ -490,6 +538,8 @@ fn mk_model(
         effort_levels: Vec::new(),
         effort_schema_path: None,
         default_effort_level: None,
+        reasoning_modes: Vec::new(),
+        default_reasoning_mode: None,
     }
 }
 
@@ -651,11 +701,24 @@ fn build_model_list() -> Vec<Model> {
             "openai",
         ),
     ];
-    // 为支持思考档位的 Claude 模型补上 effort（动态 ListAvailableModels 缺失时的兜底，
-    // 与官方实测一致：sonnet-5 / opus-4.8 / opus-4.7 有 xhigh；opus-4.6 / sonnet-4.6 无 xhigh）。
+    // 为支持思考档位的模型补上 effort（动态 ListAvailableModels 缺失时的兜底，与官方实测一致）：
+    // - Claude effort 系走 output_config：sonnet-5 / opus-4.8 / opus-4.7 有 xhigh；opus-4.6 / sonnet-4.6 无 xhigh。
+    // - GPT 5.6 系走 reasoning：effort=[none..max] default high，且带 mode=[standard, pro] default standard。
     const XHIGH: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
     const NO_XHIGH: [&str; 4] = ["low", "medium", "high", "max"];
+    const GPT_EFFORT: [&str; 6] = ["none", "low", "medium", "high", "xhigh", "max"];
+    const GPT_MODES: [&str; 2] = ["standard", "pro"];
     for m in models.iter_mut() {
+        // GPT 5.6 系列：reasoning schema，带 mode
+        if m.id.starts_with("gpt-") {
+            m.effort_levels = GPT_EFFORT.iter().map(|s| s.to_string()).collect();
+            m.effort_schema_path = Some("reasoning".to_string());
+            m.default_effort_level = Some("high".to_string());
+            m.reasoning_modes = GPT_MODES.iter().map(|s| s.to_string()).collect();
+            m.default_reasoning_mode = Some("standard".to_string());
+            continue;
+        }
+        // Claude effort 系列：output_config schema，无 mode
         let (levels, default): (&[&str], &str) = match m.id.as_str() {
             "claude-sonnet-5" | "claude-opus-4-8" => (&XHIGH, "high"),
             "claude-opus-4-7" => (&XHIGH, "xhigh"),
@@ -1555,6 +1618,7 @@ fn override_thinking_from_model_name(payload: &mut MessagesRequest) {
     if is_opus_adaptive {
         payload.output_config = Some(OutputConfig {
             effort: "high".to_string(),
+            mode: None,
             format: None,
         });
     }

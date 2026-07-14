@@ -71,6 +71,11 @@ pub struct EffortInfo {
     pub levels: Vec<String>,
     /// 默认档位
     pub default_level: Option<String>,
+    /// 合法 reasoning.mode 档位（如 [standard, pro]）。仅 reasoning 路径且 schema 带 mode 时非空
+    /// （GPT 5.6 系列）；Claude 的 output_config 无 mode，此字段保持空。
+    pub modes: Vec<String>,
+    /// 默认 reasoning.mode（如 standard）。无 mode 时为 None。
+    pub default_mode: Option<String>,
 }
 
 impl KiroModelInfo {
@@ -81,10 +86,8 @@ impl KiroModelInfo {
         let schema = self.additional_model_request_fields_schema.as_ref()?;
         let props = schema.get("properties")?;
         for path in ["output_config", "reasoning"] {
-            let effort = props
-                .get(path)
-                .and_then(|p| p.get("properties"))
-                .and_then(|p| p.get("effort"));
+            let path_props = props.get(path).and_then(|p| p.get("properties"));
+            let effort = path_props.and_then(|p| p.get("effort"));
             let Some(effort) = effort else { continue };
             let levels: Vec<String> = effort
                 .get("enum")
@@ -102,10 +105,28 @@ impl KiroModelInfo {
                 .get("default")
                 .and_then(|d| d.as_str())
                 .map(|s| s.to_string());
+            // 同路径下的 mode（GPT 5.6：reasoning.mode = [standard, pro]，default standard）。
+            // Claude 的 output_config 无 mode 子属性，此处 modes 为空、default_mode 为 None。
+            let mode = path_props.and_then(|p| p.get("mode"));
+            let modes: Vec<String> = mode
+                .and_then(|m| m.get("enum"))
+                .and_then(|e| e.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let default_mode = mode
+                .and_then(|m| m.get("default"))
+                .and_then(|d| d.as_str())
+                .map(|s| s.to_string());
             return Some(EffortInfo {
                 schema_path: path.to_string(),
                 levels,
                 default_level,
+                modes,
+                default_mode,
             });
         }
         None
@@ -195,5 +216,62 @@ mod tests {
         let eff = m.effort_info().expect("reasoning path");
         assert_eq!(eff.schema_path, "reasoning");
         assert_eq!(eff.levels, vec!["low", "high"]);
+        // reasoning 路径但无 mode 子属性 → modes 为空
+        assert!(eff.modes.is_empty());
+        assert_eq!(eff.default_mode, None);
+    }
+
+    #[test]
+    fn test_effort_info_gpt_reasoning_with_mode() {
+        // 真实 GPT 5.6 schema（实测 2026-07 ListAvailableModels）：
+        // reasoning.{mode:[standard,pro] default standard, effort:[none..max] default high}
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "reasoning": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {
+                            "type": "string",
+                            "enum": ["standard", "pro"],
+                            "default": "standard"
+                        },
+                        "effort": {
+                            "type": "string",
+                            "enum": ["none", "low", "medium", "high", "xhigh", "max"],
+                            "default": "high"
+                        }
+                    }
+                }
+            },
+            "additionalProperties": false
+        });
+        let m = KiroModelInfo {
+            model_id: Some("gpt-5.6-sol".into()),
+            model_name: Some("GPT 5.6 Sol".into()),
+            description: None,
+            token_limits: None,
+            rate_multiplier: None,
+            additional_model_request_fields_schema: Some(schema),
+        };
+        let eff = m.effort_info().expect("gpt reasoning path");
+        assert_eq!(eff.schema_path, "reasoning");
+        assert_eq!(
+            eff.levels,
+            vec!["none", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(eff.default_level.as_deref(), Some("high"));
+        assert_eq!(eff.modes, vec!["standard", "pro"]);
+        assert_eq!(eff.default_mode.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn test_effort_info_output_config_has_no_mode() {
+        // Claude 走 output_config，无 mode → modes 空、default_mode None
+        let m = model_with_effort(r#"["low","medium","high","xhigh","max"]"#, "high");
+        let eff = m.effort_info().expect("output_config path");
+        assert_eq!(eff.schema_path, "output_config");
+        assert!(eff.modes.is_empty());
+        assert_eq!(eff.default_mode, None);
     }
 }

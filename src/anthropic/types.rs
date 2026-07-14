@@ -64,6 +64,13 @@ pub struct Model {
     /// 默认 effort 档位。无 effort 时省略。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_effort_level: Option<String>,
+    /// 该模型支持的 reasoning.mode 档位（GPT 5.6：[standard, pro]）。仅 reasoning
+    /// schema 且带 mode 的模型非空；其余模型省略。客户端据此展示"标准/专业"思考模式选择器。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_modes: Vec<String>,
+    /// 默认 reasoning.mode（如 standard）。无 mode 时省略。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_reasoning_mode: Option<String>,
 }
 
 /// 模型列表响应
@@ -113,6 +120,10 @@ where
 pub struct OutputConfig {
     #[serde(default = "default_effort")]
     pub effort: String,
+    /// reasoning 模型（GPT 5.6）的思考模式：standard / pro。客户端可通过
+    /// `output_config.mode` 传入；映射到上游 `reasoning.mode`。Claude 无此字段。
+    #[serde(default)]
+    pub mode: Option<String>,
     #[serde(default)]
     pub format: Option<OutputFormat>,
 }
