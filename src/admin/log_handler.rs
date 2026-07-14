@@ -59,9 +59,15 @@ pub async fn stream_logs(
                     return Some((Ok(Event::default().event("log").data(json)), rx));
                 }
                 Err(RecvError::Lagged(n)) => {
-                    // 广播通道溢出，跳过丢失的消息继续
-                    tracing::warn!("log SSE stream lagged by {} messages", n);
-                    continue;
+                    // 关键：此处绝不能用 tracing 记录日志。
+                    // 本 SSE 流订阅的正是全局日志广播（LogCaptureLayer），若在此 warn!，
+                    // 该日志会被再次广播 → 本流（消费慢时）再次 Lagged → 又 warn! …… 形成
+                    // 指数级自放大风暴（曾观测到单秒上万条 "lagged"、CPU 打满、真实日志被冲走）。
+                    // 改为向前端推送一个 lagged 提示事件：信息送达正确的消费者，且不产生任何服务器端日志。
+                    return Some((
+                        Ok(Event::default().event("lagged").data(n.to_string())),
+                        rx,
+                    ));
                 }
                 Err(RecvError::Closed) => return None,
             }

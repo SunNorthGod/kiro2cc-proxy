@@ -41,7 +41,8 @@ impl ProxyConfig {
 ///
 /// # Arguments
 /// * `proxy` - 可选的代理配置
-/// * `timeout_secs` - 超时时间（秒）
+/// * `timeout_secs` - 读空闲超时（秒）：相邻两次读取之间的最大间隔，用于流式响应。
+///   建连超时取 `min(timeout_secs, 30)`。不设整体请求超时，避免长流被误杀。
 ///
 /// # Returns
 /// 配置好的 reqwest::Client
@@ -50,8 +51,21 @@ pub fn build_client(
     timeout_secs: u64,
     tls_backend: TlsBackend,
 ) -> anyhow::Result<Client> {
+    // 不再使用 reqwest 的整体 `.timeout()`。
+    //
+    // `.timeout()` 覆盖「从建立连接直到把响应体完整读完」的总时长——对流式 SSE 响应，
+    // 这意味着整条流必须在 timeout_secs 内读完，否则被主动掐断。长思考 + 长输出的请求
+    // 很容易超过该上限，表现为上游流在中途断开（下游插件侧观测到 aborted / read ECONNRESET），
+    // 甚至「思考完还没吐正文就被砍」（reqwest 在 reasoning 之后、正文之前到点 abort）。
+    //
+    // 改用两段更贴合流式语义的超时，总时长不再设硬上限：
+    //   - connect_timeout：建立连接的上限（快速失败，不受慢/长响应影响）
+    //   - read_timeout：相邻两次读取之间的最大空闲间隔（仅当上游真正卡住无数据时才触发）
+    // 只要上游持续产出数据，长响应就不会被误杀；短请求（如 token 刷新）行为与原整体超时等价。
+    let connect_timeout_secs = timeout_secs.min(30);
     let mut builder = Client::builder()
-        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(connect_timeout_secs))
+        .read_timeout(Duration::from_secs(timeout_secs))
         .pool_max_idle_per_host(20)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(30));

@@ -65,6 +65,14 @@ pub struct LogCaptureLayer {
 impl<S: Subscriber> Layer<S> for LogCaptureLayer {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let metadata = event.metadata();
+
+        // 防御自放大循环：日志广播的消费端（admin::log_handler 的 SSE 流）自身产生的日志
+        // 不纳入捕获/广播。否则该模块一旦记日志（如广播 Lagged 提示），会被本层再次广播 →
+        // 该 SSE 流消费不及再次 Lagged → 又记日志 …… 指数爆炸（曾导致 CPU 打满、日志被刷爆）。
+        if metadata.target().contains("admin::log_handler") {
+            return;
+        }
+
         let level = match *metadata.level() {
             Level::TRACE => "TRACE",
             Level::DEBUG => "DEBUG",
