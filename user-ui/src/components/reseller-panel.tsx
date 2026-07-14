@@ -3,11 +3,12 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft, RefreshCw, Plus, Trash2, Copy, Check, Coins, Wallet,
-  Power, PowerOff, Loader2, PlusCircle,
+  Power, PowerOff, Loader2, PlusCircle, FileText,
 } from 'lucide-react'
 import {
   getResellerOverview, createSubKey, updateSubKey, topupSubKey, deleteSubKey,
 } from '@/api/user'
+import { RechargeLogPage } from '@/components/recharge-log-page'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -47,6 +48,7 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
   const [newDays, setNewDays] = useState('')
 
   const [copiedId, setCopiedId] = useState<number | null>(null)
+  const [rechargeSubKey, setRechargeSubKey] = useState<SubKey | null>(null)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['resellerOverview'] })
 
@@ -103,6 +105,16 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
   // 共享额度池占用 = 自己已花 + 已分配给子卡 + 已结算
   const usedOfBudget = data ? data.ownUsed + data.allocated + data.committed : 0
   const budgetPercent = budget > 0 ? Math.min((usedOfBudget / budget) * 100, 100) : 0
+
+  if (rechargeSubKey) {
+    return (
+      <RechargeLogPage
+        subKeyId={rechargeSubKey.id}
+        title={`充值记录 · ${rechargeSubKey.name}`}
+        onBack={() => setRechargeSubKey(null)}
+      />
+    )
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -253,6 +265,9 @@ export function ResellerPanel({ onBack }: ResellerPanelProps) {
                             <div className="flex items-center gap-1 shrink-0">
                               <Button variant="ghost" size="icon" title="充值额度" onClick={() => handleTopup(k)}>
                                 <Coins className="h-4 w-4" />
+                              </Button>
+                              <Button variant="ghost" size="icon" title="充值记录" onClick={() => setRechargeSubKey(k)}>
+                                <FileText className="h-4 w-4" />
                               </Button>
                               <Button
                                 variant="ghost" size="icon"

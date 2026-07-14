@@ -2,7 +2,7 @@
 import axios from 'axios'
 import { storage } from '@/lib/storage'
 import type {
-  LoginRequest, LoginResponse, UsageResponse, UsageRecordsPage,
+  LoginRequest, LoginResponse, UsageResponse, UsageRecordsPage, RechargeRecordsPage,
   ResellerOverview, SubKey,
 } from '@/types/api'
 
@@ -37,6 +37,22 @@ export async function getUsage(): Promise<UsageResponse> {
 // 获取分页请求日志
 export async function getUsageRecords(page = 1, pageSize = 50): Promise<UsageRecordsPage> {
   const { data } = await api.get<UsageRecordsPage>('/usage/records', {
+    params: { page, page_size: pageSize },
+  })
+  return data
+}
+
+// 获取本卡的分页充值流水
+export async function getRechargeRecords(page = 1, pageSize = 50): Promise<RechargeRecordsPage> {
+  const { data } = await api.get<RechargeRecordsPage>('/recharges', {
+    params: { page, page_size: pageSize },
+  })
+  return data
+}
+
+// 获取某子卡密的分页充值流水（分销商）
+export async function getSubKeyRecharges(id: number, page = 1, pageSize = 50): Promise<RechargeRecordsPage> {
+  const { data } = await api.get<RechargeRecordsPage>(`/reseller/sub-keys/${id}/recharges`, {
     params: { page, page_size: pageSize },
   })
   return data

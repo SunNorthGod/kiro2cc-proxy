@@ -139,7 +139,20 @@ pub async fn create_sub_key(
         payload.credit_limit,
         payload.duration_days,
     ) {
-        Ok(child) => (StatusCode::CREATED, Json(child)).into_response(),
+        Ok(child) => {
+            // 开子卡密即记一笔充值流水（分销商来源）
+            state.recharge_tracker.record(
+                child.id,
+                "create",
+                child.credit_limit,
+                child.duration_days,
+                child.credit_limit,
+                child.expires_at,
+                "reseller",
+                None,
+            );
+            (StatusCode::CREATED, Json(child)).into_response()
+        }
         Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
     }
 }
@@ -209,10 +222,51 @@ pub async fn topup_sub_key(
         payload.add_credits,
         payload.add_days,
     ) {
-        Ok(Some(child)) => (StatusCode::OK, Json(child)).into_response(),
+        Ok(Some(child)) => {
+            state.recharge_tracker.record(
+                child.id,
+                "topup",
+                payload.add_credits,
+                payload.add_days,
+                child.credit_limit,
+                child.expires_at,
+                "reseller",
+                None,
+            );
+            (StatusCode::OK, Json(child)).into_response()
+        }
         Ok(None) => err(StatusCode::NOT_FOUND, "子卡密不存在"),
         Err(e) => err(StatusCode::BAD_REQUEST, e.to_string()),
     }
+}
+
+/// GET /api/user/reseller/sub-keys/:id/recharges?page=1&page_size=50
+/// 分销商查询自己名下某子卡密的充值流水（含归属校验）
+pub async fn sub_key_recharges(
+    State(state): State<UserState>,
+    Extension(ctx): Extension<ResellerContext>,
+    Path(child_id): Path<u32>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    match state.api_key_manager.get(child_id) {
+        Some(k) if k.parent_key_id == Some(ctx.reseller_id) => {}
+        Some(_) => return err(StatusCode::FORBIDDEN, "无权访问该子卡密"),
+        None => return err(StatusCode::NOT_FOUND, "子卡密不存在"),
+    }
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1);
+    let page_size = params
+        .get("page_size")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(500);
+    (
+        StatusCode::OK,
+        Json(state.recharge_tracker.get_records_paged(child_id, page, page_size)),
+    )
+        .into_response()
 }
 
 /// DELETE /api/user/reseller/sub-keys/:id
@@ -227,8 +281,9 @@ pub async fn delete_sub_key(
         .delete_child_committing(child_id, spent, Some(ctx.reseller_id))
     {
         Ok(true) => {
-            // 删除子卡密后，其用量记录已无归属，清理掉以免污染报表
+            // 删除子卡密后，其用量与充值记录已无归属，清理掉以免污染报表
             let _ = state.usage_tracker.reset(child_id);
+            state.recharge_tracker.reset(child_id);
             (
                 StatusCode::OK,
                 Json(SuccessBody {

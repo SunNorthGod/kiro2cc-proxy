@@ -245,6 +245,30 @@ export interface UsageRecordsResponse {
   totalPages: number
 }
 
+// 单条充值/开卡流水
+export interface RechargeRecord {
+  apiKeyId: number
+  /** create=开卡初始额度 / topup=续费充值 */
+  kind: 'create' | 'topup'
+  addCredits?: number
+  addDays?: number
+  creditLimitAfter?: number
+  expiresAtAfter?: string
+  /** admin=管理员 / reseller=分销商 */
+  source: 'admin' | 'reseller'
+  note?: string
+  createdAt: string
+}
+
+// 分页充值流水响应
+export interface RechargeRecordsResponse {
+  records: RechargeRecord[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}
+
 // 每日用量汇总
 export interface DailySummary {
   date: string          // "2026-05-21" CST

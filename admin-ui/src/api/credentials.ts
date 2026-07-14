@@ -16,6 +16,7 @@ import type {
   UsageSummary,
   RpmSnapshot,
   UsageRecordsResponse,
+  RechargeRecordsResponse,
   DailySummary,
   OverviewResponse,
   CredentialDaySummary,
@@ -227,6 +228,19 @@ export async function getCredentialUsageRecords(
 ): Promise<UsageRecordsResponse> {
   const { data } = await api.get<UsageRecordsResponse>(
     `/credentials/${id}/usage/records`,
+    { params: { page, page_size: pageSize } }
+  )
+  return data
+}
+
+// 分页获取单个 API Key 的充值/开卡流水
+export async function getKeyRechargeRecords(
+  id: number,
+  page: number,
+  pageSize: number
+): Promise<RechargeRecordsResponse> {
+  const { data } = await api.get<RechargeRecordsResponse>(
+    `/api-keys/${id}/recharges`,
     { params: { page, page_size: pageSize } }
   )
   return data

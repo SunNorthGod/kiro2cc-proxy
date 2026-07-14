@@ -63,7 +63,24 @@ pub async fn create_api_key(
         payload.duration_days,
         payload.bound_credential_ids,
     ) {
-        Ok(api_key) => (StatusCode::CREATED, Json(api_key)).into_response(),
+        Ok(api_key) => {
+            // 开卡即记一笔充值流水（仅额度卡/时长卡；纯永久卡无进账不记）
+            if let Some(rt) = &state.recharge_tracker
+                && (api_key.credit_limit.is_some() || api_key.duration_days.is_some())
+            {
+                rt.record(
+                    api_key.id,
+                    "create",
+                    api_key.credit_limit,
+                    api_key.duration_days,
+                    api_key.credit_limit,
+                    api_key.expires_at,
+                    "admin",
+                    None,
+                );
+            }
+            (StatusCode::CREATED, Json(api_key)).into_response()
+        }
         Err(e) => {
             let error = AdminErrorResponse::internal_error(e.to_string());
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response()
@@ -133,7 +150,21 @@ pub async fn top_up_api_key(
     }
 
     match manager.topup(id, payload.add_days, payload.add_credits) {
-        Ok(Some(api_key)) => Json(api_key).into_response(),
+        Ok(Some(api_key)) => {
+            if let Some(rt) = &state.recharge_tracker {
+                rt.record(
+                    api_key.id,
+                    "topup",
+                    payload.add_credits,
+                    payload.add_days,
+                    api_key.credit_limit,
+                    api_key.expires_at,
+                    "admin",
+                    None,
+                );
+            }
+            Json(api_key).into_response()
+        }
         Ok(None) => {
             let error = AdminErrorResponse::not_found(format!("API Key #{} 不存在", id));
             (StatusCode::NOT_FOUND, Json(error)).into_response()
@@ -143,6 +174,29 @@ pub async fn top_up_api_key(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response()
         }
     }
+}
+
+/// GET /api/admin/api-keys/:id/recharges?page=1&page_size=50
+/// 分页获取单个 API Key 的充值/开卡流水
+pub async fn get_key_recharge_records(
+    State(state): State<AdminState>,
+    Path(id): Path<u32>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(tracker) = &state.recharge_tracker else {
+        let error = AdminErrorResponse::internal_error("充值流水未启用");
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(error)).into_response();
+    };
+    let page = params
+        .get("page")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1);
+    let page_size = params
+        .get("page_size")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(50)
+        .min(500);
+    Json(tracker.get_records_paged(id, page, page_size)).into_response()
 }
 
 /// DELETE /api/admin/api-keys/:id

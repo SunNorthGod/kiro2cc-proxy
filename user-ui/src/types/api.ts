@@ -103,3 +103,25 @@ export interface UsageRecordsPage {
   pageSize: number
   totalPages: number
 }
+
+export interface RechargeRecordItem {
+  apiKeyId: number
+  /** create=开卡初始额度 / topup=续费充值 */
+  kind: 'create' | 'topup'
+  addCredits?: number
+  addDays?: number
+  creditLimitAfter?: number
+  expiresAtAfter?: string
+  /** admin=管理员 / reseller=分销商 */
+  source: 'admin' | 'reseller'
+  note?: string
+  createdAt: string
+}
+
+export interface RechargeRecordsPage {
+  records: RechargeRecordItem[]
+  total: number
+  page: number
+  pageSize: number
+  totalPages: number
+}

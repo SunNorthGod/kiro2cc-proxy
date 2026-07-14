@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::common::auth;
 use crate::model::api_key::{ApiKeyAuthResult, ApiKeyManager};
+use crate::model::recharge::RechargeTracker;
 use crate::model::usage::UsageTracker;
 
 /// User API 共享状态
@@ -21,6 +22,7 @@ use crate::model::usage::UsageTracker;
 pub struct UserState {
     pub api_key_manager: Arc<ApiKeyManager>,
     pub usage_tracker: Arc<UsageTracker>,
+    pub recharge_tracker: Arc<RechargeTracker>,
 }
 
 /// 用户认证上下文（注入到请求 extensions）

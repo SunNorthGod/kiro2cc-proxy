@@ -24,6 +24,7 @@ import {
   getAuthKeys,
   setAuthKeys,
   getKeyUsageRecords,
+  getKeyRechargeRecords,
   getCredentialUsageRecords,
   getCredentialTodaySummary,
   getDailyUsage,
@@ -248,6 +249,15 @@ export function useKeyUsageRecords(id: number, page: number, pageSize = 50) {
   return useQuery({
     queryKey: ['apiKeyUsageRecords', id, page, pageSize],
     queryFn: () => getKeyUsageRecords(id, page, pageSize),
+    enabled: id > 0,
+  })
+}
+
+// 查询单个 API Key 的分页充值流水
+export function useKeyRechargeRecords(id: number, page: number, pageSize = 50) {
+  return useQuery({
+    queryKey: ['apiKeyRechargeRecords', id, page, pageSize],
+    queryFn: () => getKeyRechargeRecords(id, page, pageSize),
     enabled: id > 0,
   })
 }

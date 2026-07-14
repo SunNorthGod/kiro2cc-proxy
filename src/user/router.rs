@@ -7,9 +7,11 @@ use axum::{
 };
 
 use super::{
-    handlers::{get_usage, get_usage_records, login},
+    handlers::{get_recharge_records, get_usage, get_usage_records, login},
     middleware::{UserState, reseller_auth_middleware, user_auth_middleware},
-    reseller::{create_sub_key, delete_sub_key, overview, topup_sub_key, update_sub_key},
+    reseller::{
+        create_sub_key, delete_sub_key, overview, sub_key_recharges, topup_sub_key, update_sub_key,
+    },
 };
 
 /// 创建 User API 路由
@@ -23,6 +25,7 @@ pub fn create_user_router(state: UserState) -> Router {
     let protected = Router::new()
         .route("/usage", get(get_usage))
         .route("/usage/records", get(get_usage_records))
+        .route("/recharges", get(get_recharge_records))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             user_auth_middleware,
@@ -38,6 +41,10 @@ pub fn create_user_router(state: UserState) -> Router {
             axum::routing::put(update_sub_key).delete(delete_sub_key),
         )
         .route("/reseller/sub-keys/{id}/topup", post(topup_sub_key))
+        .route(
+            "/reseller/sub-keys/{id}/recharges",
+            get(sub_key_recharges),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             reseller_auth_middleware,

@@ -4,7 +4,7 @@ import { ArrowLeft, BarChart3, Coins, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { useApiKeys, useAllUsage, useKeyUsageRecords } from '@/hooks/use-credentials'
+import { useApiKeys, useAllUsage, useKeyUsageRecords, useKeyRechargeRecords } from '@/hooks/use-credentials'
 import { useIpGeo } from '@/hooks/use-ip-geo'
 import type { ApiKeyItem } from '@/types/api'
 
@@ -53,6 +53,9 @@ export function ApiKeyDetailPage({ keyId, onBack }: ApiKeyDetailPageProps) {
   const { data: apiKeys } = useApiKeys()
   const { data: allUsage } = useAllUsage()
   const { data: recordsData, isLoading, refetch } = useKeyUsageRecords(keyId, page, PAGE_SIZE)
+
+  const [rechargePage, setRechargePage] = useState(1)
+  const { data: rechargeData, isLoading: rechargeLoading, refetch: refetchRecharge } = useKeyRechargeRecords(keyId, rechargePage, PAGE_SIZE)
 
   const apiKey = apiKeys?.find((k) => k.id === keyId)
   const summary = allUsage?.find((u) => u.apiKeyId === keyId)
@@ -154,6 +157,85 @@ export function ApiKeyDetailPage({ keyId, onBack }: ApiKeyDetailPageProps) {
           </div>
         </div>
       )}
+
+      {/* 充值记录 */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-medium text-muted-foreground flex items-center gap-1">
+            <Coins className="h-3.5 w-3.5" />
+            充值记录
+            {rechargeData && <span className="ml-1">（共 {rechargeData.total} 条）</span>}
+          </h3>
+          <Button variant="ghost" size="sm" onClick={() => refetchRecharge()} disabled={rechargeLoading}>
+            <RefreshCw className={`h-4 w-4 ${rechargeLoading ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
+
+        <Card>
+          <CardContent className="p-0">
+            {rechargeLoading ? (
+              <div className="py-8 text-center text-muted-foreground text-sm">加载中...</div>
+            ) : !rechargeData || rechargeData.records.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground text-sm">暂无充值记录</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-muted/50">
+                      <th className="text-left px-4 py-2 font-medium text-muted-foreground">时间</th>
+                      <th className="text-left px-4 py-2 font-medium text-muted-foreground">类型</th>
+                      <th className="text-right px-4 py-2 font-medium text-muted-foreground">增加额度</th>
+                      <th className="text-right px-4 py-2 font-medium text-muted-foreground">增加时长</th>
+                      <th className="text-right px-4 py-2 font-medium text-muted-foreground">充值后额度</th>
+                      <th className="text-left px-4 py-2 font-medium text-muted-foreground">来源</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rechargeData.records.map((r, idx) => (
+                      <tr key={`${r.createdAt}-${idx}`} className="border-b last:border-0 hover:bg-muted/30 transition-colors">
+                        <td className="px-4 py-2 text-xs text-muted-foreground whitespace-nowrap">
+                          {formatDate(r.createdAt)}
+                        </td>
+                        <td className="px-4 py-2 text-xs">
+                          <Badge variant={r.kind === 'create' ? 'secondary' : 'success'}>
+                            {r.kind === 'create' ? '开卡' : '充值'}
+                          </Badge>
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
+                          {r.addCredits != null ? `+${formatTokens(r.addCredits)}` : '—'}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums">
+                          {r.addDays != null ? `+${r.addDays} 天` : '—'}
+                        </td>
+                        <td className="px-4 py-2 text-right tabular-nums text-muted-foreground">
+                          {r.creditLimitAfter != null ? formatTokens(r.creditLimitAfter) : '∞'}
+                        </td>
+                        <td className="px-4 py-2 text-xs text-muted-foreground">
+                          {r.source === 'reseller' ? '分销商' : '管理员'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {rechargeData && rechargeData.totalPages > 1 && (
+          <div className="flex justify-center items-center gap-4 mt-4">
+            <Button variant="outline" size="sm" onClick={() => setRechargePage((p) => Math.max(1, p - 1))} disabled={rechargePage === 1}>
+              上一页
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              第 {rechargePage} / {rechargeData.totalPages} 页
+            </span>
+            <Button variant="outline" size="sm" onClick={() => setRechargePage((p) => Math.min(rechargeData.totalPages, p + 1))} disabled={rechargePage === rechargeData.totalPages}>
+              下一页
+            </Button>
+          </div>
+        )}
+      </div>
 
       {/* 原始日志表格 */}
       <div>

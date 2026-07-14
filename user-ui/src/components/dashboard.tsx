@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { UsageLogPage } from '@/components/usage-log-page'
+import { RechargeLogPage } from '@/components/recharge-log-page'
 import { ResellerPanel } from '@/components/reseller-panel'
 
 interface DashboardProps {
@@ -20,6 +21,7 @@ interface DashboardProps {
 
 export function Dashboard({ onLogout }: DashboardProps) {
   const [showLog, setShowLog] = useState(false)
+  const [showRecharge, setShowRecharge] = useState(false)
   const [showReseller, setShowReseller] = useState(false)
   const { data, isLoading, refetch, isRefetching } = useQuery({
     queryKey: ['usage'],
@@ -73,6 +75,10 @@ export function Dashboard({ onLogout }: DashboardProps) {
     return <UsageLogPage onBack={() => setShowLog(false)} />
   }
 
+  if (showRecharge) {
+    return <RechargeLogPage onBack={() => setShowRecharge(false)} />
+  }
+
   if (showReseller) {
     return <ResellerPanel onBack={() => setShowReseller(false)} />
   }
@@ -104,6 +110,14 @@ export function Dashboard({ onLogout }: DashboardProps) {
             >
               <FileText className="h-4 w-4 mr-1" />
               查看日志
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowRecharge(true)}
+            >
+              <Coins className="h-4 w-4 mr-1" />
+              充值记录
             </Button>
             <Button
               variant="ghost"

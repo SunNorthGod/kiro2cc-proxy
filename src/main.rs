@@ -22,6 +22,7 @@ use model::api_key::ApiKeyManager;
 use model::arg::Args;
 use model::config::Config;
 use model::failure_log::FailureLogStore;
+use model::recharge::RechargeTracker;
 use model::throttle_log::ThrottleLogStore;
 use model::usage::UsageTracker;
 
@@ -159,7 +160,7 @@ async fn main() {
         .map(|k| !k.trim().is_empty())
         .unwrap_or(false);
 
-    let (api_key_manager, usage_tracker) = if admin_key_valid {
+    let (api_key_manager, usage_tracker, recharge_tracker) = if admin_key_valid {
         let data_dir = std::path::Path::new(&config_path)
             .parent()
             .unwrap_or(std::path::Path::new("."));
@@ -176,10 +177,17 @@ async fn main() {
         });
         let tracker = Arc::new(tracker);
 
+        let recharge = RechargeTracker::load(data_dir.join("api_key_recharge.json"))
+            .unwrap_or_else(|e| {
+                tracing::error!("加载充值流水数据失败: {}", e);
+                std::process::exit(1);
+            });
+        let recharge = Arc::new(recharge);
+
         tracing::info!("API Key 多用户管理已启用");
-        (Some(manager), Some(tracker))
+        (Some(manager), Some(tracker), Some(recharge))
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // 启动 prompt cache 指纹追踪器（生产模式自动启动 30s 周期 evict 后台任务）
@@ -227,6 +235,9 @@ async fn main() {
             if let Some(ref tracker) = usage_tracker {
                 admin_state = admin_state.with_usage_tracker(tracker.clone());
             }
+            if let Some(ref recharge) = recharge_tracker {
+                admin_state = admin_state.with_recharge_tracker(recharge.clone());
+            }
             admin_state = admin_state.with_throttle_log_store(throttle_log_store.clone());
             admin_state = admin_state.with_failure_log_store(failure_log_store.clone());
             admin_state = admin_state.with_log_capture(log_capture.clone());
@@ -239,6 +250,7 @@ async fn main() {
             let user_state = user::UserState {
                 api_key_manager: api_key_manager.clone().unwrap(),
                 usage_tracker: usage_tracker.clone().unwrap(),
+                recharge_tracker: recharge_tracker.clone().unwrap(),
             };
             let user_app = user::create_user_router(user_state);
 

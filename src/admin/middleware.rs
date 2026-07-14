@@ -20,6 +20,7 @@ use crate::log_capture::LogCapture;
 use crate::model::api_key::ApiKeyManager;
 use crate::model::failure_log::FailureLogStore;
 use crate::model::rpm::RpmTracker;
+use crate::model::recharge::RechargeTracker;
 use crate::model::throttle_log::ThrottleLogStore;
 use crate::model::usage::UsageTracker;
 
@@ -36,6 +37,8 @@ pub struct AdminState {
     pub api_key_manager: Option<Arc<ApiKeyManager>>,
     /// 用量追踪器（可选）
     pub usage_tracker: Option<Arc<UsageTracker>>,
+    /// 充值流水追踪器（可选）
+    pub recharge_tracker: Option<Arc<RechargeTracker>>,
     /// RPM 追踪器（可选）
     pub rpm_tracker: Option<Arc<RpmTracker>>,
     /// 限流日志存储（可选）
@@ -56,6 +59,7 @@ impl AdminState {
             service: Arc::new(service),
             api_key_manager: None,
             usage_tracker: None,
+            recharge_tracker: None,
             rpm_tracker: None,
             throttle_log_store: None,
             failure_log_store: None,
@@ -76,6 +80,11 @@ impl AdminState {
 
     pub fn with_usage_tracker(mut self, tracker: Arc<UsageTracker>) -> Self {
         self.usage_tracker = Some(tracker);
+        self
+    }
+
+    pub fn with_recharge_tracker(mut self, tracker: Arc<RechargeTracker>) -> Self {
+        self.recharge_tracker = Some(tracker);
         self
     }
 
