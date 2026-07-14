@@ -284,6 +284,8 @@ fn owner_for_model(id: &str) -> &'static str {
         "deepseek"
     } else if l.starts_with("glm") {
         "zhipu"
+    } else if l.starts_with("gpt") {
+        "openai"
     } else {
         "kiro"
     }
@@ -296,6 +298,8 @@ fn convert_kiro_models(
 ) -> Vec<Model> {
     let fallback = build_model_list();
     let mut out = Vec::new();
+    let mut reg_entries: Vec<(String, String, Option<String>, Vec<String>, Option<String>)> =
+        Vec::new();
     for m in &resp.models {
         let Some(kiro_id) = m.model_id.as_deref() else {
             continue;
@@ -346,8 +350,18 @@ fn convert_kiro_models(
             model.effort_schema_path = Some(eff.schema_path);
             model.default_effort_level = eff.default_level;
         }
+        // 登记动态注册表：上游真实 id / relay id → kiro id + effort schema，供 map_model 精确
+        // 路由与 build_additional_model_request_fields 按 schema 构造字段（新模型自动生效）。
+        reg_entries.push((
+            kiro_id.to_string(),
+            relay_id.clone(),
+            model.effort_schema_path.clone(),
+            model.effort_levels.clone(),
+            model.default_effort_level.clone(),
+        ));
         out.push(model);
     }
+    super::converter::update_model_registry(reg_entries);
     out
 }
 
@@ -490,6 +504,7 @@ fn build_model_list() -> Vec<Model> {
     const K200: i32 = 200_000;
     const K256: i32 = 256_000;
     const K196: i32 = 196_000;
+    const K272: i32 = 272_000;
     let mut models = vec![
         mk_model(
             "auto",
@@ -610,6 +625,30 @@ fn build_model_list() -> Vec<Model> {
             64000,
             K256,
             "qwen",
+        ),
+        mk_model(
+            "gpt-5.6-sol",
+            "GPT 5.6 Sol",
+            "Experimental preview of OpenAI GPT 5.6 Sol with 272k context window",
+            128000,
+            K272,
+            "openai",
+        ),
+        mk_model(
+            "gpt-5.6-terra",
+            "GPT 5.6 Terra",
+            "Experimental preview of OpenAI GPT 5.6 Terra with 272k context window",
+            128000,
+            K272,
+            "openai",
+        ),
+        mk_model(
+            "gpt-5.6-luna",
+            "GPT 5.6 Luna",
+            "Experimental preview of OpenAI GPT 5.6 Luna with 272k context window",
+            128000,
+            K272,
+            "openai",
         ),
     ];
     // 为支持思考档位的 Claude 模型补上 effort（动态 ListAvailableModels 缺失时的兜底，
@@ -1299,8 +1338,11 @@ async fn handle_non_stream_request(
     let final_input_tokens =
         super::stream::cap_input_tokens_pub(raw_final_input_tokens, input_tokens, model);
 
-    // 本地估算 ≥ 1M 兜底触发 stop_reason
-    if final_input_tokens >= 1_000_000 && stop_reason == "end_turn" {
+    // 本地估算达到模型真实上下文窗口兜底触发 stop_reason（final 已被 cap 到窗口上限，
+    // 故此条在输入触顶时命中；GPT=272K、1M 模型=1M，各按真实窗口判定，避免漏报/误报）。
+    if final_input_tokens >= super::stream::context_window_for_model(model)
+        && stop_reason == "end_turn"
+    {
         stop_reason = "model_context_window_exceeded".to_string();
     }
 

@@ -619,6 +619,12 @@ pub(crate) async fn list_available_models(
         if is_ext {
             req = req.header("TokenType", "EXTERNAL_IDP");
         }
+        // api_key（ksk_）账号：必须声明 tokentype，否则上游按 OAuth access token 处理并要求
+        // profileArn，返回 400 "Invalid profileArn"，导致动态模型列表拉取失败、退回硬编码目录
+        // （新上线的 GPT 等模型将无法出现在 /v1/models）。
+        if credentials.is_api_key_credential() {
+            req = req.header("tokentype", "API_KEY");
+        }
         let response = req.send().await?;
 
         let status = response.status();

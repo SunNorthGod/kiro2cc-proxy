@@ -545,6 +545,9 @@ impl SseStateManager {
 pub(crate) fn context_window_for_model(model: &str) -> i32 {
     if is_million_context_model(model) {
         1_000_000
+    } else if model.to_lowercase().contains("gpt") {
+        // Kiro GPT 5.6 系列（sol/terra/luna）输入窗口 272K（对齐 ListAvailableModels）
+        272_000
     } else {
         200_000
     }
@@ -1536,8 +1539,9 @@ impl StreamContext {
         let final_input_tokens =
             cap_input_tokens(raw_final_input_tokens, self.input_tokens, &self.model);
 
-        // 本地估算 ≥ 1M 兜底触发 stop_reason
-        if final_input_tokens >= 1_000_000 {
+        // 本地估算达到模型真实上下文窗口兜底触发 stop_reason（final 已被 cap 到窗口上限，
+        // 故此条在输入触顶时命中；GPT=272K、1M 模型=1M，各按真实窗口判定）。
+        if final_input_tokens >= context_window_for_model(&self.model) {
             self.state_manager
                 .set_stop_reason("model_context_window_exceeded");
         }

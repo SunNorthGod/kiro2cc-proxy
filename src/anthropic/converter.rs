@@ -411,14 +411,83 @@ fn normalize_billing_header(content: String) -> String {
 
 /// 模型映射：将 Anthropic 模型名映射到 Kiro 模型 ID
 ///
-/// 按照用户要求：
-/// - sonnet 4.6/4-6 → claude-sonnet-4.6
-/// - 其他 sonnet → claude-sonnet-4.5
-/// - opus 4.5/4-5 → claude-opus-4.5
-/// - 其他 opus → claude-opus-4.6
+// ============================================================================
+// 动态模型注册表
+//
+// 动态拉取 Kiro ListAvailableModels 后登记：客户端可见 id（relay id）与上游真实 id 都指向
+// 同一 entry，携带 effort 承载路径（reasoning / output_config）与合法档位。目的：新上线的
+// 模型只要出现在 ListAvailableModels，就能自动路由（map_model）并按其 schema 构造请求字段
+// （build_additional_model_request_fields），无需为每个模型手写分支。未命中（冷启动 / 客户端
+// 传别名）时回退到家族启发式，保持既有行为。
+// ============================================================================
+
+/// 模型注册表条目
+#[derive(Clone)]
+struct ModelRegistryEntry {
+    /// 上游真实模型 id（用于请求 modelId）
+    kiro_id: String,
+    /// effort 承载路径：Some("reasoning") / Some("output_config") / None（不支持思考档位）
+    effort_schema_path: Option<String>,
+    /// 合法 effort 档位（用于校验 / 兜底）
+    effort_levels: Vec<String>,
+    /// 默认 effort 档位
+    default_effort: Option<String>,
+}
+
+static MODEL_REGISTRY: OnceLock<Mutex<HashMap<String, ModelRegistryEntry>>> = OnceLock::new();
+
+fn model_registry() -> &'static Mutex<HashMap<String, ModelRegistryEntry>> {
+    MODEL_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 由动态模型列表刷新时调用，整表替换登记。
+/// 每个条目为 `(kiro_id, relay_id, effort_schema_path, effort_levels, default_effort)`；
+/// kiro_id 与 relay_id（均转小写）都作为键指向同一 entry。空列表时不覆盖（避免上游偶发空返回
+/// 把注册表清空）。
+pub fn update_model_registry(
+    entries: Vec<(String, String, Option<String>, Vec<String>, Option<String>)>,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    let mut map = HashMap::new();
+    for (kiro_id, relay_id, path, levels, default) in entries {
+        let entry = ModelRegistryEntry {
+            kiro_id: kiro_id.clone(),
+            effort_schema_path: path,
+            effort_levels: levels,
+            default_effort: default,
+        };
+        map.insert(kiro_id.to_lowercase(), entry.clone());
+        map.insert(relay_id.to_lowercase(), entry);
+    }
+    if let Ok(mut guard) = model_registry().lock() {
+        *guard = map;
+    }
+}
+
+/// 按（小写）模型名查注册表条目。
+fn registry_entry(model_lower: &str) -> Option<ModelRegistryEntry> {
+    model_registry()
+        .lock()
+        .ok()
+        .and_then(|m| m.get(model_lower).cloned())
+}
+
+/// 将客户端模型名映射为上游 Kiro 模型 id。
+///
+/// 优先走动态注册表（客户端传的就是上游真实 id / relay id 时精确透传，新上线模型自动生效）；
+/// 未命中时按家族启发式兜底：
+/// - sonnet 4.6/4-6 → claude-sonnet-4.6；其他 sonnet → claude-sonnet-4.5
+/// - opus 4.5/4-5 → claude-opus-4.5；其他 opus → claude-opus-4.6
 /// - 所有 haiku → claude-haiku-4.5
 pub fn map_model(model: &str) -> Option<String> {
     let model_lower = model.to_lowercase();
+
+    // 动态注册表精确命中：新上线模型（出现在 ListAvailableModels 后）自动路由，无需加分支。
+    if let Some(entry) = registry_entry(&model_lower) {
+        return Some(entry.kiro_id);
+    }
 
     if model_lower.contains("sonnet") {
         if model_lower.contains("4-6") || model_lower.contains("4.6") {
@@ -458,6 +527,17 @@ pub fn map_model(model: &str) -> Option<String> {
         }
     } else if model_lower.contains("qwen") {
         Some("qwen3-coder-next".to_string())
+    } else if model_lower.contains("gpt") {
+        // Kiro GPT 5.6 系列（sol / terra / luna，272K 输入 / 128K 输出）。
+        // 非 claude 系列 relay id 与 kiro id 相同（不转连字符），故按变体名精确匹配。
+        if model_lower.contains("terra") {
+            Some("gpt-5.6-terra".to_string())
+        } else if model_lower.contains("luna") {
+            Some("gpt-5.6-luna".to_string())
+        } else {
+            // 含 "sol" 或泛化的 gpt / gpt-5 默认走 sol
+            Some("gpt-5.6-sol".to_string())
+        }
     } else {
         None
     }
@@ -1399,8 +1479,60 @@ fn model_max_output_tokens(model: &str) -> i32 {
     }
 }
 
-/// 构建 additionalModelRequestFields（thinking、output_config、max_tokens）
+/// 解析 reasoning-schema 模型的 effort：客户端显式关思考 => none；否则取 output_config.effort，
+/// 按注册表登记的合法档位校验（缺失则用 GPT 已知超集），非法值回退默认档位 / high。
+fn resolve_reasoning_effort(req: &MessagesRequest, reg: Option<&ModelRegistryEntry>) -> String {
+    if let Some(t) = &req.thinking {
+        if t.thinking_type == "disabled" {
+            return "none".to_string();
+        }
+    }
+    let raw = req
+        .output_config
+        .as_ref()
+        .map(|c| c.effort.as_str())
+        .unwrap_or("high");
+    let allowed: Vec<String> = reg
+        .map(|e| e.effort_levels.clone())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            ["none", "low", "medium", "high", "xhigh", "max"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
+        });
+    if allowed.iter().any(|a| a == raw) {
+        raw.to_string()
+    } else {
+        reg.and_then(|e| e.default_effort.clone())
+            .unwrap_or_else(|| "high".to_string())
+    }
+}
+
+/// 构建 additionalModelRequestFields。
+///
+/// - reasoning-schema 模型（如 GPT 5.6）：只发 `{ reasoning: { effort } }`（其 schema
+///   additionalProperties=false，多发 output_config / max_tokens / thinking 会被上游 400）。
+/// - output_config-schema（Claude effort 系）与 null-schema 模型：发 thinking(disabled) +
+///   output_config.effort + max_tokens（后者兜底抬到 ≥1024）。
+/// 判定优先按动态注册表 schema_path，冷启动 / 未知模型按家族兜底（gpt=reasoning）。
 fn build_additional_model_request_fields(req: &MessagesRequest) -> Option<serde_json::Value> {
+    let model_lower = req.model.to_lowercase();
+
+    let reg = registry_entry(&model_lower);
+    let uses_reasoning_schema = match reg.as_ref().and_then(|e| e.effort_schema_path.as_deref()) {
+        Some("reasoning") => true,
+        Some(_) => false,
+        None => model_lower.contains("gpt"),
+    };
+
+    if uses_reasoning_schema {
+        let effort = resolve_reasoning_effort(req, reg.as_ref());
+        let mut fields = serde_json::Map::new();
+        fields.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+        return Some(serde_json::Value::Object(fields));
+    }
+
     let mut fields = serde_json::Map::new();
 
     // 关键：绝不向后端注入 thinking:{type:"adaptive"}。
@@ -1431,7 +1563,12 @@ fn build_additional_model_request_fields(req: &MessagesRequest) -> Option<serde_
 
     if req.max_tokens > 0 {
         let cap = model_max_output_tokens(&req.model);
-        let capped = req.max_tokens.min(cap);
+        // 上游 reasoning 类模型要求 additionalModelRequestFields.max_tokens >= 1024，
+        // 否则返回 400 "Invalid additionalModelRequestFields: must have a minimum value of 1024.0"。
+        // 客户端辅助调用（标题生成/话题分类/摘要等）常发 <1024，这里兜底抬到下限 1024。
+        // cap 恒 >= 1024（见 model_max_output_tokens：64000/128000），故结果恒在 [1024, cap]。
+        const MIN_ADDITIONAL_MAX_TOKENS: i32 = 1024;
+        let capped = req.max_tokens.min(cap).max(MIN_ADDITIONAL_MAX_TOKENS);
         fields.insert("max_tokens".into(), serde_json::json!(capped));
     }
 
@@ -1444,6 +1581,12 @@ fn build_additional_model_request_fields(req: &MessagesRequest) -> Option<serde_
 
 /// 生成thinking标签前缀
 fn generate_thinking_prefix(req: &MessagesRequest) -> Option<String> {
+    // GPT 系列的思考由 additionalModelRequestFields.reasoning.effort 控制；注入 Claude 专用的
+    // <thinking_mode>/<max_thinking_length> 文本标签对 GPT 无意义（污染 system prompt，
+    // 甚至可能干扰推理），故直接跳过。
+    if req.model.to_lowercase().contains("gpt") {
+        return None;
+    }
     if let Some(t) = &req.thinking {
         if t.thinking_type == "enabled" {
             return Some(format!(
