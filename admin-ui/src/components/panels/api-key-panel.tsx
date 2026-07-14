@@ -76,6 +76,9 @@ export function ApiKeyPanel({ onClose }: ApiKeyPanelProps) {
     let added = 0
     let duplicate = 0
     let failed = 0
+    // 记录失败的 key：导入完成后只把失败的留在输入框以便重试；已成功/重复的从输入框移除，
+    // 避免再次点击"添加"时，刚成功添加的 key（此时已进入账号列表）被本地去重误判为"重复"。
+    const failedKeys: string[] = []
 
     for (let i = 0; i < parsedKeys.length; i++) {
       const key = parsedKeys[i]
@@ -131,6 +134,7 @@ export function ApiKeyPanel({ onClose }: ApiKeyPanelProps) {
         })
       } catch (error: unknown) {
         failed++
+        failedKeys.push(key)
         setResults((prev) => {
           const next = [...prev]
           next[i] = { ...next[i], status: 'failed', error: extractErrorMessage(error) }
@@ -140,6 +144,9 @@ export function ApiKeyPanel({ onClose }: ApiKeyPanelProps) {
     }
 
     setAdding(false)
+    // 只保留失败的 key（成功/重复的已处理完毕，从输入框移除）：这样再次点击"添加"时不会把
+    // 刚加成功的 key 又当成"重复"，也方便对失败项直接重试。
+    setApiKeys(failedKeys.join('\n'))
 
     const parts: string[] = []
     if (added > 0) parts.push(`成功 ${added}`)
