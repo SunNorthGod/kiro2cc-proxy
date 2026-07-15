@@ -369,6 +369,7 @@ export function useRelays() {
   return useQuery({
     queryKey: ['relays'],
     queryFn: getRelays,
+    refetchInterval: 10000,
   })
 }
 

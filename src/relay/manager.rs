@@ -199,9 +199,15 @@ impl RelayManager {
             }
             for rule in &relay.routes {
                 if rule.mode == mode && glob_match(&rule.pattern, model) {
+                    // target 留空 = 透传原模型号
+                    let target_model = if rule.target.trim().is_empty() {
+                        model.to_string()
+                    } else {
+                        rule.target.clone()
+                    };
                     return Some(RouteTarget {
                         relay: relay.clone(),
-                        target_model: rule.target.clone(),
+                        target_model,
                     });
                 }
             }

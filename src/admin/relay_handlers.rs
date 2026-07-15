@@ -31,7 +31,20 @@ pub async fn list_relays(State(state): State<AdminState>) -> Response {
     let Some(mgr) = state.relay_manager.as_ref() else {
         return no_relay();
     };
-    let views: Vec<RelayView> = mgr.list().iter().map(|r| r.to_masked()).collect();
+    let views: Vec<RelayView> = mgr
+        .list()
+        .iter()
+        .map(|r| {
+            let mut v = r.to_masked();
+            if let Some(tracker) = state.usage_tracker.as_ref() {
+                let (requests, credits, rpm) = tracker.relay_summary(&r.name);
+                v.requests = requests;
+                v.credits = credits;
+                v.rpm = rpm;
+            }
+            v
+        })
+        .collect();
     Json(views).into_response()
 }
 

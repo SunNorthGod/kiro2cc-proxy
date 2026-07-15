@@ -103,7 +103,10 @@ export function RelayPanel() {
     }
     const mult = parseFloat(form.billingMultiplier)
     const billingMultiplier = isNaN(mult) || mult <= 0 ? 1.0 : mult
-    const cleanRoutes = form.routes.filter((r) => r.pattern.trim() && r.target.trim())
+    // target 留空 = 透传原模型号；只要求 pattern 非空
+    const cleanRoutes = form.routes
+      .filter((r) => r.pattern.trim())
+      .map((r) => ({ ...r, pattern: r.pattern.trim(), target: r.target.trim() }))
 
     if (editingId === null) {
       if (!form.apiKey.trim()) {
@@ -251,8 +254,11 @@ export function RelayPanel() {
                 <div className="text-xs text-muted-foreground font-mono break-all">
                   {relay.baseUrl} · {relay.maskedApiKey}
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  模型 {relay.models.length} 个{relay.models.length === 0 ? '（点右上刷新拉取）' : ''}
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                  <span>模型 {relay.models.length} 个{relay.models.length === 0 ? '（点右上刷新拉取）' : ''}</span>
+                  <span>RPM <span className="text-foreground font-medium">{relay.rpm ?? 0}</span></span>
+                  <span>累计承接 <span className="text-foreground font-medium">{relay.requests ?? 0}</span> 次</span>
+                  <span>累计计费 <span className="text-foreground font-medium">{(relay.credits ?? 0).toFixed(2)}</span> credits</span>
                 </div>
                 {relay.routes.length === 0 ? (
                   <div className="text-xs text-amber-600 dark:text-amber-400">
@@ -269,7 +275,7 @@ export function RelayPanel() {
                         )}
                         <span className="font-mono">{r.pattern}</span>
                         <span className="opacity-60">→</span>
-                        <span className="font-mono">{r.target}</span>
+                        <span className="font-mono">{r.target.trim() ? r.target : '透传原模型号'}</span>
                       </Badge>
                     ))}
                   </div>
@@ -329,7 +335,10 @@ export function RelayPanel() {
                   onChange={(e) => setForm({ ...form, billingMultiplier: e.target.value })}
                 />
                 <p className="text-xs text-muted-foreground">
-                  credits = 中转用量 × GPT官方定价 × 自标定系数 × 倍率。1.0 = 与 Kiro 真实 GPT 同价
+                  credits = 中转用量 × GPT官方定价 × 自标定系数 × 倍率
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  1.0 = 与 Kiro 真实 GPT 同价；如 1.5 = 按基准 1.5 倍收（多赚 0.5 倍）
                 </p>
               </div>
               <div className="flex items-center justify-between">
@@ -367,7 +376,7 @@ export function RelayPanel() {
                     <Input
                       className="flex-1"
                       list="relay-model-options"
-                      placeholder="目标模型"
+                      placeholder="目标模型（留空=透传原模型号）"
                       value={route.target}
                       onChange={(e) => updateRoute(idx, { target: e.target.value })}
                     />

@@ -407,6 +407,25 @@ impl UsageTracker {
         let _ = self.dirty_tx.send(());
     }
 
+    /// 按中转名聚合：累计承接请求数、累计计费 credits、最近 60s RPM。
+    pub fn relay_summary(&self, relay_name: &str) -> (u64, f64, u64) {
+        let records = self.records.read();
+        let now = Utc::now();
+        let mut requests = 0u64;
+        let mut credits = 0.0;
+        let mut rpm = 0u64;
+        for r in records.iter() {
+            if r.relay.as_deref() == Some(relay_name) {
+                requests += 1;
+                credits += r.credits_used.unwrap_or(0.0);
+                if (now - r.created_at).num_seconds() < 60 {
+                    rpm += 1;
+                }
+            }
+        }
+        (requests, credits, rpm)
+    }
+
     /// GPT 计费自标定：扫描线上真实 Kiro GPT 记录（排除 relay 估算记录），
     /// 用 GPT 官方定价结构算出总“官方美元成本”，与真实 credits_used 求比值，
     /// 得到该部署自身的 credits/USD 系数 k。样本不足（USD 或 credits 为 0）返回 None。

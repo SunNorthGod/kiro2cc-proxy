@@ -84,6 +84,9 @@ impl RelayConfig {
             routes: self.routes.clone(),
             billing_multiplier: self.billing_multiplier,
             created_at: self.created_at,
+            requests: 0,
+            credits: 0.0,
+            rpm: 0,
         }
     }
 }
@@ -112,6 +115,12 @@ pub struct RelayView {
     pub routes: Vec<RouteRule>,
     pub billing_multiplier: f64,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 累计承接请求数（由 relay 名聚合用量记录得出）
+    pub requests: u64,
+    /// 累计计费 credits
+    pub credits: f64,
+    /// 最近 60s RPM
+    pub rpm: u64,
 }
 
 /// 创建中转请求

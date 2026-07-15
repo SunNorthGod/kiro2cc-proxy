@@ -379,6 +379,12 @@ export interface RelayItem {
   /** 计费倍率：credits = 官方USD × 自标定k × 倍率 */
   billingMultiplier: number
   createdAt?: string | null
+  /** 累计承接请求数（后端按 relay 名从用量记录聚合） */
+  requests?: number
+  /** 累计计费 credits */
+  credits?: number
+  /** 最近 60s RPM */
+  rpm?: number
 }
 
 export interface CreateRelayRequest {
