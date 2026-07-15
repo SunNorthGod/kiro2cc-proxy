@@ -94,6 +94,8 @@ export interface UsageRecordItem {
   createdAt: string
   clientIp?: string
   credentialLabel?: string
+  /** 中转来源（有值=该请求由外部中转承接，credits 为估算值） */
+  relay?: string
 }
 
 export interface UsageRecordsPage {

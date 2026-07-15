@@ -143,8 +143,12 @@ export function DailyDetailPage({ date, onBack }: DailyDetailPageProps) {
                               </span>
                             ) : '—'}
                           </td>
-                          <td className="px-4 py-2 text-xs text-muted-foreground max-w-[120px] truncate" title={record.credentialLabel}>
-                            {record.credentialLabel ?? '—'}
+                          <td className="px-4 py-2 text-xs max-w-[140px] truncate" title={record.relay ? `中转承接：${record.relay}` : record.credentialLabel}>
+                            {record.relay ? (
+                              <span className="text-violet-600 dark:text-violet-400 font-medium">中转·{record.relay}</span>
+                            ) : (
+                              <span className="text-muted-foreground">{record.credentialLabel ?? '—'}</span>
+                            )}
                           </td>
                           <td className={`px-4 py-2 font-mono text-xs ${getModelColor(record.model)}`}>
                             {record.model}
@@ -159,7 +163,11 @@ export function DailyDetailPage({ date, onBack }: DailyDetailPageProps) {
                           </td>
                           <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
                             {record.credits.toFixed(4)}
-                            {record.creditsUsed != null && <span className="ml-1 text-xs text-green-500">✓</span>}
+                            {record.relay ? (
+                              <span className="ml-1 text-xs text-amber-500" title="中转估算计费">≈</span>
+                            ) : record.creditsUsed != null ? (
+                              <span className="ml-1 text-xs text-green-500" title="真实 Kiro 计量">✓</span>
+                            ) : null}
                             {record.creditsSaved != null && record.creditsSaved > 0 && (
                               <span className="ml-1 text-xs text-green-600 dark:text-green-400">
                                 (省 {record.creditsSaved.toFixed(4)})

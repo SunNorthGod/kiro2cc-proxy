@@ -640,6 +640,7 @@ impl UsageTracker {
                     credential_id: r.credential_id,
                     credential_label,
                     client_ip: r.client_ip,
+                    relay: r.relay,
                 }
             })
             .collect();
@@ -699,6 +700,9 @@ pub struct UsageRecordItem {
     /// 客户端 IP（None 表示旧数据或未知）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_ip: Option<String>,
+    /// 中转来源（Some(中转名) 表示此请求由外部中转承接，credits 为估算值）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
 }
 
 impl UsageTracker {
@@ -775,6 +779,7 @@ impl UsageTracker {
                     credential_id: r.credential_id,
                     credential_label,
                     client_ip: r.client_ip,
+                    relay: r.relay,
                 }
             })
             .collect();
@@ -1139,6 +1144,7 @@ impl UsageTracker {
                     credential_id: r.credential_id,
                     credential_label,
                     client_ip: r.client_ip,
+                    relay: r.relay,
                 }
             })
             .collect();

@@ -237,7 +237,11 @@ export function CredentialDetailPage({ credentialId, onBack }: CredentialDetailP
                         </td>
                         <td className="px-4 py-2 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
                           {record.credits.toFixed(4)}
-                          {record.creditsUsed != null && <span className="ml-1 text-xs text-green-500">✓</span>}
+                          {record.relay ? (
+                            <span className="ml-1 text-xs text-amber-500" title="中转估算计费">≈</span>
+                          ) : record.creditsUsed != null ? (
+                            <span className="ml-1 text-xs text-green-500" title="真实 Kiro 计量">✓</span>
+                          ) : null}
                           {record.creditsSaved != null && record.creditsSaved > 0 && (
                             <span className="ml-1 text-xs text-green-600 dark:text-green-400">
                               (省 {record.creditsSaved.toFixed(4)})

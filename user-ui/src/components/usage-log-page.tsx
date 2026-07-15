@@ -206,7 +206,11 @@ export function UsageLogPage({ onBack }: UsageLogPageProps) {
                             </td>
                             <td className="px-4 py-3 text-right tabular-nums font-medium text-blue-600 dark:text-blue-400">
                               {r.credits.toFixed(4)}
-                              {r.creditsUsed != null && <span className="ml-1 text-xs text-green-500">✓</span>}
+                              {r.relay ? (
+                                <span className="ml-1 text-xs text-amber-500" title="中转估算计费">≈</span>
+                              ) : r.creditsUsed != null ? (
+                                <span className="ml-1 text-xs text-green-500" title="真实 Kiro 计量">✓</span>
+                              ) : null}
                               {r.creditsSaved != null && r.creditsSaved > 0 && (
                                 <span className="ml-1 text-xs text-green-600 dark:text-green-400">
                                   (省 {r.creditsSaved.toFixed(4)})
