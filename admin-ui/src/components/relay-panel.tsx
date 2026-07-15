@@ -212,9 +212,14 @@ export function RelayPanel() {
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-base flex items-center gap-2">
+                    <span
+                      className={`inline-block w-2 h-2 rounded-full shrink-0 ${relay.enabled ? 'bg-green-400' : 'bg-gray-400'}`}
+                    />
                     {relay.name}
                     {!relay.enabled && <Badge variant="secondary">已停用</Badge>}
-                    <span className="text-xs font-normal text-muted-foreground">
+                    <span
+                      className={`text-xs font-medium ${relay.billingMultiplier > 1 ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground font-normal'}`}
+                    >
                       x{relay.billingMultiplier} 倍率
                     </span>
                   </CardTitle>
@@ -255,10 +260,10 @@ export function RelayPanel() {
                   {relay.baseUrl} · {relay.maskedApiKey}
                 </div>
                 <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                  <span>模型 {relay.models.length} 个{relay.models.length === 0 ? '（点右上刷新拉取）' : ''}</span>
-                  <span>RPM <span className="text-foreground font-medium">{relay.rpm ?? 0}</span></span>
+                  <span>模型 <span className="text-foreground font-medium">{relay.models.length}</span> 个{relay.models.length === 0 ? '（点右上刷新拉取）' : ''}</span>
+                  <span className="text-blue-600 dark:text-blue-400 font-medium">RPM {relay.rpm ?? 0}</span>
                   <span>累计承接 <span className="text-foreground font-medium">{relay.requests ?? 0}</span> 次</span>
-                  <span>累计计费 <span className="text-foreground font-medium">{(relay.credits ?? 0).toFixed(2)}</span> credits</span>
+                  <span>累计计费 <span className="text-orange-600 dark:text-orange-400 font-medium">{(relay.credits ?? 0).toFixed(2)}</span> credits</span>
                 </div>
                 {relay.routes.length === 0 ? (
                   <div className="text-xs text-amber-600 dark:text-amber-400">
@@ -267,7 +272,11 @@ export function RelayPanel() {
                 ) : (
                   <div className="flex flex-wrap gap-1.5">
                     {relay.routes.map((r, i) => (
-                      <Badge key={i} variant="outline" className="gap-1 font-normal">
+                      <Badge
+                        key={i}
+                        variant="outline"
+                        className={`gap-1 font-normal ${r.mode === 'direct' ? 'border-blue-500/30 bg-blue-500/5' : 'border-orange-500/30 bg-orange-500/5'}`}
+                      >
                         {r.mode === 'direct' ? (
                           <Zap className="h-3 w-3 text-blue-500" />
                         ) : (
