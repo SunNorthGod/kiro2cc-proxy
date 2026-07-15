@@ -1149,8 +1149,8 @@ pub struct MultiTokenManager {
     sticky_misses: AtomicU64,
     /// 持久化串行锁：串行化 credentials/stats 的序列化+写盘，避免多路径并发交错写
     persist_lock: Mutex<()>,
-    /// 已尝试自动获取 profileArn 的账号 ID（内存态，避免每次请求重复调用 ListAvailableProfiles）
-    profile_arn_attempted: Mutex<std::collections::HashSet<u64>>,
+    /// 已尝试自动获取 profileArn 的账号 ID -> 最近一次尝试时刻（退避重试，避免全 Ok(None) 时永久锁死）
+    profile_arn_attempted: Mutex<std::collections::HashMap<u64, std::time::Instant>>,
     /// 进行中的设备授权登录会话（sessionId -> 会话）
     device_login_sessions: Mutex<HashMap<String, DeviceLoginSession>>,
 }
@@ -1340,7 +1340,7 @@ impl MultiTokenManager {
             sticky_hits: AtomicU64::new(0),
             sticky_misses: AtomicU64::new(0),
             persist_lock: Mutex::new(()),
-            profile_arn_attempted: Mutex::new(std::collections::HashSet::new()),
+            profile_arn_attempted: Mutex::new(std::collections::HashMap::new()),
             device_login_sessions: Mutex::new(HashMap::new()),
         };
 
@@ -1903,6 +1903,9 @@ impl MultiTokenManager {
     /// ListAvailableProfiles 拉取真实 ARN，写回内存 + 磁盘。每进程每账号最多尝试一次
     /// （内存去重），避免每次请求重复调用；失败保留标记，等下次重启再试。
     async fn ensure_profile_arn(&self, id: u64, creds: &mut KiroCredentials, token: &str) {
+        // profileArn 探测退避窗口：全 Ok(None)（HTTP 200 但暂无 profile）时不再永久锁死，
+        // 而是等待该窗口后自动重探，实现无需重启进程的自愈。
+        const PROFILE_ARN_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(60);
         if creds
             .profile_arn
             .as_deref()
@@ -1922,9 +1925,12 @@ impl MultiTokenManager {
         }
         {
             let mut attempted = self.profile_arn_attempted.lock();
-            if !attempted.insert(id) {
-                return; // 已尝试过
+            if let Some(last) = attempted.get(&id) {
+                if last.elapsed() < PROFILE_ARN_RETRY_BACKOFF {
+                    return; // 退避窗口内，暂不重复探测
+                }
             }
+            attempted.insert(id, std::time::Instant::now());
         }
         let effective_proxy = creds.effective_proxy(self.proxy.as_ref());
         let current_region = creds.effective_api_region(&self.config).to_string();
@@ -2963,6 +2969,8 @@ impl MultiTokenManager {
             status: "error".to_string(),
             credential_id: None,
             message: Some(m),
+            profile_status: None,
+            warning: None,
         };
 
         let (client_id, client_secret, code_verifier, expected_state, region, start_url, name) = {
@@ -3033,10 +3041,41 @@ impl MultiTokenManager {
         };
         let credential_id = self.add_credential(new_cred).await?;
         self.device_login_sessions.lock().remove(session_id);
+        // OAuth 成功、账号已创建。再做有限次 profile/额度探测，把「登录成功」与「profile 就绪」分开回报，
+        // 避免 UI 因首次额度校验失败而误报「登录失败」。
+        let mut profile_status = "pending";
+        for (i, delay_ms) in [0u64, 1500, 3000].iter().enumerate() {
+            if *delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+            }
+            // 显式清除退避标记，允许本轮强制重探（登录后 AWS 侧 profile 可能尚未传播）
+            self.profile_arn_attempted.lock().remove(&credential_id);
+            match self.get_usage_limits_for(credential_id).await {
+                Ok(_) => {
+                    profile_status = "ready";
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "账号 #{} 登录后第 {} 次 profile/额度探测未就绪: {}",
+                        credential_id,
+                        i + 1,
+                        e
+                    );
+                }
+            }
+        }
+        let warning = if profile_status == "ready" {
+            None
+        } else {
+            Some("账号已添加，但 Kiro Profile 初始化暂未完成，稍后会自动重试验活".to_string())
+        };
         Ok(DeviceLoginPollResponse {
             status: "complete".to_string(),
             credential_id: Some(credential_id),
             message: None,
+            profile_status: Some(profile_status.to_string()),
+            warning,
         })
     }
 

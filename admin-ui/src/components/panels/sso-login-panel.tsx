@@ -70,8 +70,14 @@ export function SsoLoginPanel({ onClose }: SsoLoginPanelProps) {
     try {
       const res = await pollDeviceLogin(session.sessionId, redirectResponse.trim())
       if (res.status === 'complete') {
-        toast.success(`登录成功，已添加账号 #${res.credentialId}`)
         queryClient.invalidateQueries({ queryKey: ['credentials'] })
+        if (res.profileStatus && res.profileStatus !== 'ready') {
+          toast.warning(
+            `SSO 登录成功，账号 #${res.credentialId} 已添加，但 Kiro Profile 初始化暂未完成，稍后会自动重试验活`
+          )
+        } else {
+          toast.success(`登录成功，已添加账号 #${res.credentialId}`)
+        }
         onClose()
       } else {
         toast.error(`登录失败: ${res.message || '未知错误'}`)

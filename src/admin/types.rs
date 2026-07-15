@@ -500,4 +500,10 @@ pub struct DeviceLoginPollResponse {
     /// 出错时的说明
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Profile 初始化状态：ready / pending（账号已建但 profile 未就绪）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_status: Option<String>,
+    /// 非致命提示（如 profile 未就绪，稍后自动重试验活）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }

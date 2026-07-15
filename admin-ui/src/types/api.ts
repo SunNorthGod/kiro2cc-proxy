@@ -348,4 +348,6 @@ export interface DeviceLoginPollResponse {
   status: 'pending' | 'complete' | 'error'
   credentialId?: number
   message?: string
+  profileStatus?: 'ready' | 'pending' | 'failed'
+  warning?: string
 }
