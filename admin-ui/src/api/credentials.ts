@@ -25,6 +25,10 @@ import type {
   StartDeviceLoginRequest,
   DeviceLoginStartResponse,
   DeviceLoginPollResponse,
+  RelayItem,
+  CreateRelayRequest,
+  UpdateRelayRequest,
+  RelayModelsResponse,
 } from '@/types/api'
 
 // 创建 axios 实例
@@ -326,5 +330,33 @@ export async function getThrottleLogs(
     `/credentials/${id}/throttle-logs`,
     { params: { page, page_size: pageSize } }
   )
+  return data
+}
+
+// ============ 中转对接（备用路由） ============
+
+export async function getRelays(): Promise<RelayItem[]> {
+  const { data } = await api.get<RelayItem[]>('/relays')
+  return data
+}
+
+export async function createRelay(req: CreateRelayRequest): Promise<RelayItem> {
+  const { data } = await api.post<RelayItem>('/relays', req)
+  return data
+}
+
+export async function updateRelay(id: number, req: UpdateRelayRequest): Promise<RelayItem> {
+  const { data } = await api.put<RelayItem>(`/relays/${id}`, req)
+  return data
+}
+
+export async function deleteRelay(id: number): Promise<SuccessResponse> {
+  const { data } = await api.delete<SuccessResponse>(`/relays/${id}`)
+  return data
+}
+
+// 拉取（并缓存）该中转的模型列表
+export async function fetchRelayModels(id: number): Promise<RelayModelsResponse> {
+  const { data } = await api.post<RelayModelsResponse>(`/relays/${id}/models`)
   return data
 }

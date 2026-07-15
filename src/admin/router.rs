@@ -22,6 +22,9 @@ use super::{
     },
     log_handler::{download_logs, snapshot_logs, stream_logs},
     middleware::{AdminState, admin_auth_middleware},
+    relay_handlers::{
+        create_relay, delete_relay, fetch_relay_models, list_relays, update_relay,
+    },
 };
 
 /// 创建 Admin API 路由
@@ -68,6 +71,9 @@ pub fn create_admin_router(state: AdminState) -> Router {
         )
         .route("/api-keys/{id}/usage/records", get(get_key_usage_records))
         .route("/api-keys/{id}/recharges", get(get_key_recharge_records))
+        .route("/relays", get(list_relays).post(create_relay))
+        .route("/relays/{id}", put(update_relay).delete(delete_relay))
+        .route("/relays/{id}/models", post(fetch_relay_models))
         .route("/rpm", get(get_rpm))
         .route("/overview", get(get_overview))
         .route("/usage/daily", get(get_daily_usage))

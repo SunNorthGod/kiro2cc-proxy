@@ -23,6 +23,7 @@ mod error;
 mod handlers;
 mod log_handler;
 mod middleware;
+mod relay_handlers;
 mod router;
 mod service;
 pub mod types;

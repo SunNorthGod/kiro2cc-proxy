@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 import { useState, useEffect, useRef } from 'react'
-import { RefreshCw, LogOut, Server, Plus, Trash2, RotateCcw, CheckCircle2, Key, Settings, BarChart2, ScrollText, LayoutDashboard } from 'lucide-react'
+import { RefreshCw, LogOut, Server, Plus, Trash2, RotateCcw, CheckCircle2, Key, Settings, BarChart2, ScrollText, LayoutDashboard, Waypoints } from 'lucide-react'
 import kiroIcon from '@/assets/kiro-icon.png'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -18,6 +18,7 @@ import { CredentialDetailPage } from '@/components/credential-detail-page'
 import { ThrottleLogPage } from '@/components/throttle-log-page'
 import { FailureLogPage } from '@/components/failure-log-page'
 import { SettingsPanel } from '@/components/settings-panel'
+import { RelayPanel } from '@/components/relay-panel'
 import { LogViewerPage } from '@/components/log-viewer-page'
 import { useCredentials, useDeleteCredential, useResetFailure, useRpm, useDailyUsage, useServerInfo } from '@/hooks/use-credentials'
 import { DailyStatsPage } from '@/components/daily-stats-page'
@@ -32,7 +33,7 @@ interface DashboardProps {
 }
 
 export function Dashboard({ onLogout }: DashboardProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'credentials' | 'apikeys' | 'settings' | 'logs'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'credentials' | 'apikeys' | 'relay' | 'settings' | 'logs'>('overview')
   const [detailKeyId, setDetailKeyId] = useState<number | null>(null)
   const [detailCredentialId, setDetailCredentialId] = useState<number | null>(null)
   const [throttleLogCredentialId, setThrottleLogCredentialId] = useState<number | null>(null)
@@ -54,7 +55,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [dailyView, setDailyView] = useState<string | null>(null)
   const [dailyFromSidebar, setDailyFromSidebar] = useState(false)
   const cancelVerifyRef = useRef(false)
-  const prevTabRef = useRef<'overview' | 'credentials' | 'apikeys' | 'settings' | 'logs' | null>(null)
+  const prevTabRef = useRef<'overview' | 'credentials' | 'apikeys' | 'relay' | 'settings' | 'logs' | null>(null)
   const prevDetailCredentialId = useRef<number | null>(null)
   const prevDailyView = useRef<string | null>(null)
   const initialBalanceFetchDone = useRef(false)
@@ -679,6 +680,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
               { label: '概览', icon: <LayoutDashboard className="w-4 h-4 shrink-0" />, active: activeTab === 'overview', onClick: () => { setActiveTab('overview'); setDetailKeyId(null); setDetailCredentialId(null); setDailyView(null) } },
               { label: '账号管理', icon: <Server className="w-4 h-4 shrink-0" />, active: activeTab === 'credentials' && dailyView === null, onClick: () => { setActiveTab('credentials'); setDetailKeyId(null); setDetailCredentialId(null); setDailyView(null) } },
               { label: 'API Keys', icon: <Key className="w-4 h-4 shrink-0" />, active: activeTab === 'apikeys', onClick: () => { setActiveTab('apikeys'); setDetailKeyId(null); setDetailCredentialId(null); setDailyView(null) } },
+              { label: '中转对接', icon: <Waypoints className="w-4 h-4 shrink-0" />, active: activeTab === 'relay', onClick: () => { setActiveTab('relay'); setDetailKeyId(null); setDetailCredentialId(null); setDailyView(null) } },
               { label: '每日统计', icon: <BarChart2 className="w-4 h-4 shrink-0" />, active: dailyView !== null, onClick: () => { setActiveTab('credentials'); setDetailKeyId(null); setDetailCredentialId(null); setDailyView('list'); setDailyFromSidebar(true) } },
             ].map(({ label, icon, active, onClick }) => (
               <button key={label} onClick={onClick}
@@ -730,6 +732,8 @@ export function Dashboard({ onLogout }: DashboardProps) {
           <LogViewerPage />
         ) : activeTab === 'settings' ? (
           <SettingsPanel />
+        ) : activeTab === 'relay' ? (
+          <RelayPanel />
         ) : activeTab === 'apikeys' ? (
           detailKeyId !== null ? (
             <ApiKeyDetailPage

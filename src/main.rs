@@ -8,6 +8,7 @@ mod http_client;
 mod kiro;
 mod log_capture;
 mod model;
+mod relay;
 pub mod token;
 mod user;
 mod user_ui;
@@ -149,7 +150,7 @@ async fn main() {
         api_url: config.count_tokens_api_url.clone(),
         api_key: config.count_tokens_api_key.clone(),
         auth_type: config.count_tokens_auth_type.clone(),
-        proxy: proxy_config,
+        proxy: proxy_config.clone(),
         tls_backend: config.tls_backend,
     });
 
@@ -190,6 +191,29 @@ async fn main() {
         (None, None, None)
     };
 
+    // 初始化中转对接管理器（仅 Admin 启用时加载 relays.json）
+    let relay_manager: Option<Arc<relay::RelayManager>> = if admin_key_valid {
+        let data_dir = std::path::Path::new(&config_path)
+            .parent()
+            .unwrap_or(std::path::Path::new("."));
+        match relay::RelayManager::load(
+            data_dir.join("relays.json"),
+            proxy_config.clone(),
+            config.tls_backend,
+        ) {
+            Ok(m) => {
+                tracing::info!("中转对接（备用路由）已启用");
+                Some(Arc::new(m))
+            }
+            Err(e) => {
+                tracing::error!("加载中转配置失败（中转功能不可用）: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // 启动 prompt cache 指纹追踪器（生产模式自动启动 30s 周期 evict 后台任务）
     let fingerprint_tracker = cache::fingerprint::FingerprintTracker::new(config.cache_simulation);
     tracing::info!(
@@ -209,6 +233,9 @@ async fn main() {
     }
     if let Some(ref tracker) = usage_tracker {
         anthropic_app_state = anthropic_app_state.with_usage_tracker(tracker.clone());
+    }
+    if let Some(ref mgr) = relay_manager {
+        anthropic_app_state = anthropic_app_state.with_relay_manager(mgr.clone());
     }
 
     let anthropic_app = anthropic::create_router_with_provider_and_state(
@@ -241,6 +268,9 @@ async fn main() {
             admin_state = admin_state.with_throttle_log_store(throttle_log_store.clone());
             admin_state = admin_state.with_failure_log_store(failure_log_store.clone());
             admin_state = admin_state.with_log_capture(log_capture.clone());
+            if let Some(ref mgr) = relay_manager {
+                admin_state = admin_state.with_relay_manager(mgr.clone());
+            }
             let admin_app = admin::create_admin_router(admin_state);
 
             // 创建 Admin UI 路由

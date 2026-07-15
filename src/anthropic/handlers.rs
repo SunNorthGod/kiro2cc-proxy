@@ -242,6 +242,40 @@ fn map_provider_error_with_context(
         .into_response()
 }
 
+/// 判断 Kiro 上游错误是否可触发中转兜底。
+///
+/// 排除客户端 400 类（上下文窗口已满 / 单次输入过长）——这类是请求本身的问题，
+/// 换到中转同样会失败或浪费，不应兜底。其余（所有账号耗尽 / 429 / 5xx / 网络错误）
+/// 均视为 Kiro 池整体失败，允许兜底到中转。
+fn error_eligible_for_fallback(err: &Error) -> bool {
+    let s = err.to_string();
+    !(s.contains("CONTENT_LENGTH_EXCEEDS_THRESHOLD") || s.contains("Input is too long"))
+}
+
+/// 中转直连失败时的错误响应（direct 模式专用；fallback 模式失败会返回原 Kiro 错误）。
+fn relay_error_response(err: anyhow::Error) -> Response {
+    tracing::error!("中转直连失败: {}", err);
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(ErrorResponse::new(
+            "api_error",
+            format!("中转请求失败: {}", err),
+        )),
+    )
+        .into_response()
+}
+
+/// 计算某中转的 GPT 计费 credits/USD 系数（有 tracker 则自标定，否则用兜底常量）。
+fn relay_gpt_k(
+    manager: &crate::relay::RelayManager,
+    usage_tracker: &Option<std::sync::Arc<crate::model::usage::UsageTracker>>,
+) -> f64 {
+    match usage_tracker {
+        Some(t) => manager.gpt_credit_per_usd(t),
+        None => crate::model::usage::GPT_FALLBACK_CREDIT_PER_USD,
+    }
+}
+
 /// 从原始请求体反序列化 MessagesRequest，失败时记录详细的 serde 错误用于诊断。
 ///
 /// 替代 axum 的 `Json<MessagesRequest>` 提取器——后者反序列化失败时直接返回 400
@@ -937,7 +971,42 @@ pub async fn post_messages(
         .map(|f| f.format_type == "json_schema")
         .unwrap_or(false);
 
-    if payload.stream {
+    // 中转路由准备：为 direct/fallback 预留 usage_tracker / client_ip 的克隆，
+    // 避免被 Kiro 处理函数消费后无法用于中转计费。
+    let relay_mgr = state.relay_manager.clone();
+    let usage_tracker_relay = usage_tracker.clone();
+    let client_ip_relay = client_ip.clone();
+    let route_model = payload.model.clone();
+    let stream = payload.stream;
+
+    // direct：命中直连规则的模型直接走中转，跳过 Kiro
+    if let Some(mgr) = relay_mgr.as_ref()
+        && let Some(target) = mgr.match_direct(&route_model)
+    {
+        let gpt_k = relay_gpt_k(mgr, &usage_tracker_relay);
+        tracing::info!(
+            model = %route_model, target = %target.target_model, relay = %target.relay.name,
+            "中转直连(direct)命中，跳过 Kiro"
+        );
+        return match crate::relay::forward::forward(
+            mgr,
+            &target.relay,
+            &target.target_model,
+            &body,
+            stream,
+            usage_tracker_relay,
+            api_key_id,
+            client_ip_relay,
+            gpt_k,
+        )
+        .await
+        {
+            Ok(resp) => resp,
+            Err(e) => relay_error_response(e),
+        };
+    }
+
+    let kiro_result = if stream {
         // 流式响应
         handle_stream_request(
             provider,
@@ -974,6 +1043,70 @@ pub async fn post_messages(
             fp_profile,
         )
         .await
+    };
+
+    finalize_with_fallback(
+        kiro_result,
+        relay_mgr,
+        route_model,
+        input_tokens,
+        &body,
+        stream,
+        usage_tracker_relay,
+        api_key_id,
+        client_ip_relay,
+    )
+    .await
+}
+
+/// 处理 Kiro 结果：成功直接返回；失败且命中 fallback 规则则兜底转中转，
+/// 中转也失败或无匹配目标时返回原始 Kiro 错误（不做 claude→gpt 替换）。
+#[allow(clippy::too_many_arguments)]
+async fn finalize_with_fallback(
+    kiro_result: Result<Response, Error>,
+    relay_mgr: Option<std::sync::Arc<crate::relay::RelayManager>>,
+    route_model: String,
+    input_tokens: i32,
+    body: &Bytes,
+    stream: bool,
+    usage_tracker_relay: Option<std::sync::Arc<crate::model::usage::UsageTracker>>,
+    api_key_id: Option<u32>,
+    client_ip_relay: Option<String>,
+) -> Response {
+    match kiro_result {
+        Ok(resp) => resp,
+        Err(e) => {
+            if error_eligible_for_fallback(&e)
+                && let Some(mgr) = relay_mgr.as_ref()
+                && let Some(target) = mgr.match_fallback(&route_model)
+            {
+                let gpt_k = relay_gpt_k(mgr, &usage_tracker_relay);
+                tracing::warn!(
+                    model = %route_model, target = %target.target_model, relay = %target.relay.name,
+                    error = %e,
+                    "Kiro 池整体失败，兜底(fallback)转中转"
+                );
+                match crate::relay::forward::forward(
+                    mgr,
+                    &target.relay,
+                    &target.target_model,
+                    body,
+                    stream,
+                    usage_tracker_relay,
+                    api_key_id,
+                    client_ip_relay,
+                    gpt_k,
+                )
+                .await
+                {
+                    Ok(resp) => return resp,
+                    Err(relay_err) => {
+                        tracing::warn!("兜底中转也失败，返回原 Kiro 错误: {}", relay_err)
+                    }
+                }
+            }
+            map_provider_error_with_context(e, &route_model, input_tokens)
+        }
     }
 }
 
@@ -992,14 +1125,14 @@ async fn handle_stream_request(
     prompt_cache_usage: crate::cache::PromptCacheUsage,
     bound_ids: Vec<u64>,
     client_ip: Option<String>,
-) -> Response {
+) -> Result<Response, Error> {
     // 调用 Kiro API（支持多账号故障转移）
     let (response, credential_id) =
         match call_upstream_with_reasoning_retry(provider.as_ref(), request_body, &bound_ids, true)
             .await
         {
             Ok(resp) => resp,
-            Err(e) => return map_provider_error_with_context(e, model, input_tokens),
+            Err(e) => return Err(e),
         };
 
     // 创建流处理上下文
@@ -1016,13 +1149,13 @@ async fn handle_stream_request(
     let stream = create_sse_stream(response, ctx, initial_events);
 
     // 返回 SSE 响应
-    Response::builder()
+    Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap()
+        .unwrap())
 }
 
 /// Ping 事件间隔（25秒）
@@ -1197,14 +1330,14 @@ async fn handle_non_stream_request(
     json_schema_requested: bool,
     fp_tracker: Option<std::sync::Arc<crate::cache::fingerprint::FingerprintTracker>>,
     fp_profile: Option<Vec<crate::cache::fingerprint::ContentSegment>>,
-) -> Response {
+) -> Result<Response, Error> {
     // 调用 Kiro API（支持多账号故障转移）
     let (response, credential_id) =
         match call_upstream_with_reasoning_retry(provider.as_ref(), request_body, &bound_ids, false)
             .await
         {
             Ok(resp) => resp,
-            Err(e) => return map_provider_error_with_context(e, model, input_tokens),
+            Err(e) => return Err(e),
         };
 
     // 读取响应体
@@ -1212,14 +1345,14 @@ async fn handle_non_stream_request(
         Ok(bytes) => bytes,
         Err(e) => {
             tracing::error!("读取响应体失败: {}", e);
-            return (
+            return Ok((
                 StatusCode::BAD_GATEWAY,
                 Json(ErrorResponse::new(
                     "api_error",
                     format!("读取响应失败: {}", e),
                 )),
             )
-                .into_response();
+                .into_response());
         }
     };
 
@@ -1507,7 +1640,7 @@ async fn handle_non_stream_request(
         }
     });
 
-    (StatusCode::OK, Json(response_body)).into_response()
+    Ok((StatusCode::OK, Json(response_body)).into_response())
 }
 
 /// 去除 JSON 响应中模型可能添加的 Markdown 代码围栏
@@ -1823,7 +1956,41 @@ pub async fn post_messages_cc(
         .map(|f| f.format_type == "json_schema")
         .unwrap_or(false);
 
-    if payload.stream {
+    // 中转路由准备（同 /v1/messages）
+    let relay_mgr = state.relay_manager.clone();
+    let usage_tracker_relay = usage_tracker.clone();
+    let client_ip_relay = client_ip.clone();
+    let route_model = payload.model.clone();
+    let stream = payload.stream;
+
+    // direct：命中直连规则的模型直接走中转，跳过 Kiro
+    if let Some(mgr) = relay_mgr.as_ref()
+        && let Some(target) = mgr.match_direct(&route_model)
+    {
+        let gpt_k = relay_gpt_k(mgr, &usage_tracker_relay);
+        tracing::info!(
+            model = %route_model, target = %target.target_model, relay = %target.relay.name,
+            "中转直连(direct)命中，跳过 Kiro"
+        );
+        return match crate::relay::forward::forward(
+            mgr,
+            &target.relay,
+            &target.target_model,
+            &body,
+            stream,
+            usage_tracker_relay,
+            api_key_id,
+            client_ip_relay,
+            gpt_k,
+        )
+        .await
+        {
+            Ok(resp) => resp,
+            Err(e) => relay_error_response(e),
+        };
+    }
+
+    let kiro_result = if stream {
         // 流式响应（缓冲模式）
         handle_stream_request_buffered(
             provider,
@@ -1832,8 +1999,8 @@ pub async fn post_messages_cc(
             input_tokens,
             prefix_estimated_tokens,
             thinking_enabled,
-            usage_tracker.clone(),
-            rpm_tracker.clone(),
+            usage_tracker,
+            rpm_tracker,
             api_key_id,
             prompt_cache_usage,
             bound_ids,
@@ -1860,7 +2027,20 @@ pub async fn post_messages_cc(
             fp_profile,
         )
         .await
-    }
+    };
+
+    finalize_with_fallback(
+        kiro_result,
+        relay_mgr,
+        route_model,
+        input_tokens,
+        &body,
+        stream,
+        usage_tracker_relay,
+        api_key_id,
+        client_ip_relay,
+    )
+    .await
 }
 
 /// 处理流式请求（缓冲版本）
@@ -1881,14 +2061,14 @@ async fn handle_stream_request_buffered(
     prompt_cache_usage: crate::cache::PromptCacheUsage,
     bound_ids: Vec<u64>,
     client_ip: Option<String>,
-) -> Response {
+) -> Result<Response, Error> {
     // 调用 Kiro API（支持多账号故障转移）
     let (response, credential_id) =
         match call_upstream_with_reasoning_retry(provider.as_ref(), request_body, &bound_ids, true)
             .await
         {
             Ok(resp) => resp,
-            Err(e) => return map_provider_error_with_context(e, model, estimated_input_tokens),
+            Err(e) => return Err(e),
         };
 
     // 创建缓冲流处理上下文
@@ -1902,13 +2082,13 @@ async fn handle_stream_request_buffered(
     let stream = create_buffered_sse_stream(response, ctx);
 
     // 返回 SSE 响应
-    Response::builder()
+    Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header(header::CONNECTION, "keep-alive")
         .body(Body::from_stream(stream))
-        .unwrap()
+        .unwrap())
 }
 
 /// 创建缓冲 SSE 事件流

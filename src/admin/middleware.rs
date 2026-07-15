@@ -49,6 +49,8 @@ pub struct AdminState {
     pub log_capture: Option<Arc<LogCapture>>,
     /// 配置文件路径（用于持久化修改）
     pub config_path: Option<PathBuf>,
+    /// 中转对接管理器（可选）
+    pub relay_manager: Option<Arc<crate::relay::RelayManager>>,
 }
 
 impl AdminState {
@@ -65,7 +67,13 @@ impl AdminState {
             failure_log_store: None,
             log_capture: None,
             config_path: None,
+            relay_manager: None,
         }
+    }
+
+    pub fn with_relay_manager(mut self, manager: Arc<crate::relay::RelayManager>) -> Self {
+        self.relay_manager = Some(manager);
+        self
     }
 
     pub fn with_master_api_key(mut self, key: Arc<RwLock<String>>) -> Self {

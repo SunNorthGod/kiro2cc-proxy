@@ -31,8 +31,13 @@ import {
   getDailyUsageRecords,
   getThrottleLogs,
   getFailureLogs,
+  getRelays,
+  createRelay,
+  updateRelay,
+  deleteRelay,
+  fetchRelayModels,
 } from '@/api/credentials'
-import type { AddCredentialRequest, UpdateCredentialRequest, CreateApiKeyRequest, UpdateApiKeyRequest } from '@/types/api'
+import type { AddCredentialRequest, UpdateCredentialRequest, CreateApiKeyRequest, UpdateApiKeyRequest, CreateRelayRequest, UpdateRelayRequest } from '@/types/api'
 
 // 查询凭据列表
 export function useCredentials() {
@@ -355,5 +360,55 @@ export function useThrottleLogs(id: number, page: number, pageSize = 50) {
     queryKey: ['throttleLogs', id, page, pageSize],
     queryFn: () => getThrottleLogs(id, page, pageSize),
     enabled: id > 0,
+  })
+}
+
+// ============ 中转对接 Hooks ============
+
+export function useRelays() {
+  return useQuery({
+    queryKey: ['relays'],
+    queryFn: getRelays,
+  })
+}
+
+export function useCreateRelay() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (req: CreateRelayRequest) => createRelay(req),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['relays'] })
+    },
+  })
+}
+
+export function useUpdateRelay() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: UpdateRelayRequest }) =>
+      updateRelay(id, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['relays'] })
+    },
+  })
+}
+
+export function useDeleteRelay() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => deleteRelay(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['relays'] })
+    },
+  })
+}
+
+export function useFetchRelayModels() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => fetchRelayModels(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['relays'] })
+    },
   })
 }

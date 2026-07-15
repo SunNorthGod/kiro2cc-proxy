@@ -46,6 +46,8 @@ pub struct AppState {
     pub rpm_tracker: Option<Arc<RpmTracker>>,
     /// Prompt cache 指纹追踪器（替代末层兜底）
     pub fingerprint_tracker: Option<Arc<crate::cache::fingerprint::FingerprintTracker>>,
+    /// 中转对接管理器（可选，启用备用路由）
+    pub relay_manager: Option<Arc<crate::relay::RelayManager>>,
 }
 
 impl AppState {
@@ -59,7 +61,14 @@ impl AppState {
             usage_tracker: None,
             rpm_tracker: None,
             fingerprint_tracker: None,
+            relay_manager: None,
         }
+    }
+
+    /// 设置中转对接管理器
+    pub fn with_relay_manager(mut self, manager: Arc<crate::relay::RelayManager>) -> Self {
+        self.relay_manager = Some(manager);
+        self
     }
 
     /// 设置 KiroProvider

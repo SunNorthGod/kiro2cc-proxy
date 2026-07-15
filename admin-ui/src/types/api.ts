@@ -351,3 +351,55 @@ export interface DeviceLoginPollResponse {
   profileStatus?: 'ready' | 'pending' | 'failed'
   warning?: string
 }
+
+// ============ 中转对接（备用路由） ============
+
+export type RouteMode = 'direct' | 'fallback'
+
+// 单条路由规则
+export interface RouteRule {
+  /** 请求模型匹配模式（支持 * 通配，如 gpt*、claude-*、*） */
+  pattern: string
+  /** 目标模型（中转 /v1/models 里的真实模型名） */
+  target: string
+  /** direct=直连（跳过 Kiro）；fallback=仅 Kiro 池全失败时兜底 */
+  mode: RouteMode
+}
+
+// 中转配置（脱敏视图）
+export interface RelayItem {
+  id: number
+  name: string
+  baseUrl: string
+  /** 脱敏后的 apiKey（如 sk-x...abcd），编辑时留空表示不修改 */
+  maskedApiKey: string
+  enabled: boolean
+  models: string[]
+  routes: RouteRule[]
+  /** 计费倍率：credits = 官方USD × 自标定k × 倍率 */
+  billingMultiplier: number
+  createdAt?: string | null
+}
+
+export interface CreateRelayRequest {
+  name: string
+  baseUrl: string
+  apiKey: string
+  enabled?: boolean
+  routes?: RouteRule[]
+  billingMultiplier?: number
+}
+
+export interface UpdateRelayRequest {
+  name?: string
+  baseUrl?: string
+  /** 留空/不传表示不修改 apiKey */
+  apiKey?: string
+  enabled?: boolean
+  routes?: RouteRule[]
+  billingMultiplier?: number
+}
+
+export interface RelayModelsResponse {
+  models: string[]
+}

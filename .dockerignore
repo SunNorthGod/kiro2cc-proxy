@@ -8,6 +8,9 @@ admin-ui/dist/
 admin-ui/pnpm-lock.yaml
 admin-ui/tsconfig.tsbuildinfo
 admin-ui/.vite/
+user-ui/node_modules/
+user-ui/dist/
+user-ui/.vite/
 
 # Version control
 .git/

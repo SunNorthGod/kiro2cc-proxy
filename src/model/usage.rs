@@ -50,6 +50,32 @@ pub struct UsageRecord {
     /// 客户端 IP（None 表示旧数据或未知）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_ip: Option<String>,
+    /// 中转对接来源（Some(中转名) 表示此请求由外部中转服务承接，credits 为估算值）。
+    /// None 表示由 Kiro 承接（正常情况）。用于把 relay 记录从 GPT 计费自标定中排除，
+    /// 避免自身估算值反过来污染标定系数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+}
+
+// ============ GPT 计费基准（自标定） ============
+//
+// GPT-5 官方定价（美元/百万 token），仅用于计算“官方美元成本”作为中间量；
+// 真正的 credits 由 `官方USD × k × 倍率` 得出，其中 k 由线上真实 Kiro GPT 记录自标定。
+const GPT_INPUT_PER_MTOK: f64 = 1.25;
+const GPT_CACHE_READ_PER_MTOK: f64 = 0.125;
+const GPT_CACHE_WRITE_PER_MTOK: f64 = 1.5625;
+const GPT_OUTPUT_PER_MTOK: f64 = 10.0;
+
+/// 当线上样本不足时的兜底 credits/USD（实测 2026-07 ≈ 27.8）。
+pub const GPT_FALLBACK_CREDIT_PER_USD: f64 = 27.8;
+
+/// 用 GPT 官方定价结构计算一批 token 的“官方美元成本”。
+/// `fresh_input` 为不含缓存的纯输入 token。
+pub fn gpt_official_usd(fresh_input: i64, cache_read: i64, cache_creation: i64, output: i64) -> f64 {
+    fresh_input.max(0) as f64 / 1e6 * GPT_INPUT_PER_MTOK
+        + cache_read.max(0) as f64 / 1e6 * GPT_CACHE_READ_PER_MTOK
+        + cache_creation.max(0) as f64 / 1e6 * GPT_CACHE_WRITE_PER_MTOK
+        + output.max(0) as f64 / 1e6 * GPT_OUTPUT_PER_MTOK
 }
 
 /// 单个 API Key 的用量汇总
@@ -277,6 +303,7 @@ impl UsageTracker {
             cache_creation_1h_input_tokens: 0,
             created_at: Utc::now(),
             client_ip,
+            relay: None,
         };
         {
             let mut records = self.records.write();
@@ -322,6 +349,96 @@ impl UsageTracker {
         }
         let _ = self.dirty_tx.send(());
     }
+
+    /// 记录一次由外部中转承接的请求用量。
+    ///
+    /// 与 `record` 的区别：`relay` 字段标记来源中转名；`credits_used` 为按 GPT 自标定
+    /// 基准估算的 credits（已含倍率），会被正常计入 API Key 额度扣减，但会从后续的
+    /// GPT 计费自标定中排除，避免估算值自我强化。`model` 记录真实中转模型名（不伪装）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_relay(
+        &self,
+        api_key_id: u32,
+        model: String,
+        input_tokens: i32,
+        output_tokens: i32,
+        client_ip: Option<String>,
+        credits_used: f64,
+        cache_read_input_tokens: i32,
+        cache_creation_input_tokens: i32,
+        relay_name: String,
+    ) {
+        let record = UsageRecord {
+            api_key_id,
+            credential_id: None,
+            model,
+            input_tokens,
+            output_tokens,
+            estimated_cost: 0.0,
+            credits_used: Some(credits_used),
+            cache_read_input_tokens: Some(cache_read_input_tokens),
+            cache_creation_input_tokens: Some(cache_creation_input_tokens),
+            cache_creation_5m_input_tokens: 0,
+            cache_creation_1h_input_tokens: 0,
+            created_at: Utc::now(),
+            client_ip,
+            relay: Some(relay_name),
+        };
+        {
+            let mut records = self.records.write();
+            records.push(record);
+            let key_count = records
+                .iter()
+                .filter(|r| r.api_key_id == api_key_id)
+                .count();
+            if key_count > MAX_RECORDS_PER_KEY {
+                let excess = key_count - MAX_RECORDS_PER_KEY;
+                let mut removed = 0;
+                records.retain(|r| {
+                    if removed < excess && r.api_key_id == api_key_id {
+                        removed += 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+        let _ = self.dirty_tx.send(());
+    }
+
+    /// GPT 计费自标定：扫描线上真实 Kiro GPT 记录（排除 relay 估算记录），
+    /// 用 GPT 官方定价结构算出总“官方美元成本”，与真实 credits_used 求比值，
+    /// 得到该部署自身的 credits/USD 系数 k。样本不足（USD 或 credits 为 0）返回 None。
+    pub fn gpt_credit_per_usd(&self) -> Option<f64> {
+        let records = self.records.read();
+        let mut total_usd = 0.0;
+        let mut total_credits = 0.0;
+        for r in records.iter() {
+            if r.relay.is_some() {
+                continue;
+            }
+            if !r.model.to_lowercase().starts_with("gpt") {
+                continue;
+            }
+            let Some(cu) = r.credits_used else {
+                continue;
+            };
+            let cache_read = r.cache_read_input_tokens.unwrap_or(0).max(0) as i64;
+            let cache_creation = r.cache_creation_input_tokens.unwrap_or(0).max(0) as i64;
+            // input_tokens 含缓存，纯输入 = input - cache_read - cache_creation
+            let fresh = (r.input_tokens.max(0) as i64 - cache_read - cache_creation).max(0);
+            let output = r.output_tokens.max(0) as i64;
+            total_usd += gpt_official_usd(fresh, cache_read, cache_creation, output);
+            total_credits += cu;
+        }
+        if total_usd > 0.0 && total_credits > 0.0 {
+            Some(total_credits / total_usd)
+        } else {
+            None
+        }
+    }
+
     /// 获取单个 API Key 的用量汇总
     pub fn get_summary(&self, api_key_id: u32) -> UsageSummary {
         let records = self.records.read();
