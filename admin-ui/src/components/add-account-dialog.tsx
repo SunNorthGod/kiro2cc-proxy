@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Harllan He. Licensed under MIT.
 import { useState } from 'react'
-import { UserPlus, KeyRound, FileUp, LogIn, Globe } from 'lucide-react'
+import { UserPlus, KeyRound, FileUp, LogIn, Globe, FileJson } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { ManualAddPanel } from '@/components/panels/manual-add-panel'
@@ -8,18 +8,20 @@ import { ApiKeyPanel } from '@/components/panels/api-key-panel'
 import { BatchImportPanel } from '@/components/panels/batch-import-panel'
 import { SsoLoginPanel } from '@/components/panels/sso-login-panel'
 import { SocialLoginPanel } from '@/components/panels/social-login-panel'
+import { KiroFileImportPanel } from '@/components/panels/kiro-file-import-panel'
 
 interface AddAccountDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
 }
 
-type Tab = 'manual' | 'apikey' | 'batch' | 'sso' | 'social'
+type Tab = 'manual' | 'apikey' | 'batch' | 'sso' | 'social' | 'kirofile'
 
 const TABS: { id: Tab; label: string; icon: typeof UserPlus }[] = [
   { id: 'manual', label: '手动', icon: UserPlus },
   { id: 'apikey', label: 'API Key', icon: KeyRound },
   { id: 'batch', label: '批量导入', icon: FileUp },
+  { id: 'kirofile', label: 'Kiro 文件', icon: FileJson },
   { id: 'sso', label: 'SSO 登录', icon: LogIn },
   { id: 'social', label: 'Social 登录', icon: Globe },
 ]
@@ -61,6 +63,7 @@ export function AddAccountDialog({ open, onOpenChange }: AddAccountDialogProps) 
         {tab === 'manual' && <ManualAddPanel key="manual" onClose={close} />}
         {tab === 'apikey' && <ApiKeyPanel key="apikey" onClose={close} />}
         {tab === 'batch' && <BatchImportPanel key="batch" onClose={close} />}
+        {tab === 'kirofile' && <KiroFileImportPanel key="kirofile" onClose={close} />}
         {tab === 'sso' && <SsoLoginPanel key="sso" onClose={close} />}
         {tab === 'social' && <SocialLoginPanel key="social" onClose={close} />}
       </DialogContent>
