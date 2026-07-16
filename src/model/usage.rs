@@ -481,6 +481,10 @@ impl UsageTracker {
         let total_credits_saved: f64 = filtered
             .iter()
             .filter_map(|r| {
+                // relay 记录 estimated_cost=0，算出的“省”是负的假值，排除
+                if r.relay.is_some() {
+                    return None;
+                }
                 r.credits_used
                     .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu)
             })
@@ -620,9 +624,12 @@ impl UsageTracker {
                 let credential_label = r
                     .credential_id
                     .and_then(|cid| credential_labels.get(&cid).cloned());
-                let credits_saved = r
-                    .credits_used
-                    .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu);
+                let credits_saved = if r.relay.is_some() {
+                    None
+                } else {
+                    r.credits_used
+                        .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu)
+                };
                 let credits = r
                     .credits_used
                     .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model));
@@ -759,9 +766,12 @@ impl UsageTracker {
                 let credential_label = r
                     .credential_id
                     .and_then(|cid| credential_labels.get(&cid).cloned());
-                let credits_saved = r
-                    .credits_used
-                    .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu);
+                let credits_saved = if r.relay.is_some() {
+                    None
+                } else {
+                    r.credits_used
+                        .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu)
+                };
                 let credits = r
                     .credits_used
                     .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model));
@@ -940,7 +950,9 @@ impl UsageTracker {
             entry.2 += r
                 .credits_used
                 .unwrap_or(r.estimated_cost * get_k_ref(&r.model));
-            if let Some(cu) = r.credits_used {
+            if r.relay.is_none()
+                && let Some(cu) = r.credits_used
+            {
                 entry.3 += r.estimated_cost * get_k_ref(&r.model) - cu;
             }
             entry.4 += r.input_tokens as i64;
@@ -976,10 +988,13 @@ impl UsageTracker {
         for r in records.iter() {
             let k_ref = get_k_ref(&r.model);
             let credits = r.credits_used.unwrap_or(r.estimated_cost * k_ref);
-            let saved = r
-                .credits_used
-                .map(|cu| r.estimated_cost * k_ref - cu)
-                .unwrap_or(0.0);
+            let saved = if r.relay.is_some() {
+                0.0
+            } else {
+                r.credits_used
+                    .map(|cu| r.estimated_cost * k_ref - cu)
+                    .unwrap_or(0.0)
+            };
             let it = r.input_tokens as i64;
             let ot = r.output_tokens as i64;
 
@@ -1124,9 +1139,12 @@ impl UsageTracker {
                 let credential_label = r
                     .credential_id
                     .and_then(|cid| credential_labels.get(&cid).cloned());
-                let credits_saved = r
-                    .credits_used
-                    .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu);
+                let credits_saved = if r.relay.is_some() {
+                    None
+                } else {
+                    r.credits_used
+                        .map(|cu| r.estimated_cost * get_k_ref(&r.model) - cu)
+                };
                 let credits = r
                     .credits_used
                     .unwrap_or_else(|| r.estimated_cost * get_k_ref(&r.model));

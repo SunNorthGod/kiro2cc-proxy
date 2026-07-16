@@ -81,8 +81,10 @@ export function SocialLoginPanel({ onClose }: SocialLoginPanelProps) {
     return (
       <div className="space-y-4 py-4">
         <p className="text-sm text-muted-foreground">
-          适用于 Kiro 社交/联合登录（Google / GitHub / Microsoft 等，无需企业门户地址）。
+          适用于 Builder ID / 社交登录（登录页提供 Google / Apple / GitHub / Amazon / 邮箱等入口）。
           点「获取登录链接」后会给出授权链接，在浏览器登录后把跳转到的回调地址粘贴回来即可。
+          <br />
+          <b>注意</b>：企业/组织账号(输邮箱跳转微软那种)请走「SSO 登录」标签,填组织门户地址。
         </p>
         <div className="space-y-2">
           <label htmlFor="socialName" className="text-sm font-medium">
@@ -143,12 +145,12 @@ export function SocialLoginPanel({ onClose }: SocialLoginPanelProps) {
       </div>
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">
-          第 2 步：登录后浏览器会跳转到 <code>http://localhost:3128/?code=...</code>，
+          第 2 步：登录后浏览器会跳转到 <code>http://127.0.0.1/oauth/callback?code=...</code>，
           页面会显示<b>无法访问（这是正常的）</b>。把地址栏里那条完整地址复制，粘贴到下面。
         </p>
         <textarea
           className="flex min-h-[72px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          placeholder="http://localhost:3128/?code=...&state=..."
+          placeholder="http://127.0.0.1/oauth/callback?code=...&state=..."
           value={redirectResponse}
           onChange={(e) => setRedirectResponse(e.target.value)}
           disabled={completing}
