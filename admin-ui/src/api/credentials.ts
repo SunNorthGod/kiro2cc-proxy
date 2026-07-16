@@ -132,6 +132,26 @@ export async function pollDeviceLogin(
   return data
 }
 
+// 发起 Social 登录（app.kiro.dev，支持 Google/GitHub/Microsoft 等，无需门户地址）
+export async function startSocialLogin(
+  req: { region?: string; name?: string }
+): Promise<DeviceLoginStartResponse> {
+  const { data } = await api.post<DeviceLoginStartResponse>('/social-login/start', req)
+  return data
+}
+
+// 完成 Social 登录：提交粘贴回来的回调内容（含 code）换取 refreshToken
+export async function pollSocialLogin(
+  sessionId: string,
+  redirectResponse: string
+): Promise<DeviceLoginPollResponse> {
+  const { data } = await api.post<DeviceLoginPollResponse>('/social-login/poll', {
+    sessionId,
+    redirectResponse,
+  })
+  return data
+}
+
 // 负载均衡模式：priority=优先级(粘住最高优先级账号) / balanced=全局轮询 / auto=优先级+同级负载均衡
 export type LoadBalancingMode = 'priority' | 'balanced' | 'auto'
 

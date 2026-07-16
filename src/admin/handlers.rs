@@ -267,3 +267,31 @@ pub async fn poll_device_login(
         Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
     }
 }
+
+/// POST /api/admin/social-login/start
+/// 发起 Social 登录（app.kiro.dev，支持 Google/GitHub/Microsoft 等）
+pub async fn start_social_login(
+    State(state): State<AdminState>,
+    Json(payload): Json<super::types::StartSocialLoginRequest>,
+) -> impl IntoResponse {
+    match state.service.start_social_login(payload).await {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}
+
+/// POST /api/admin/social-login/poll
+/// 完成 Social 登录：用粘贴回来的 code 换取 refreshToken 并建号
+pub async fn poll_social_login(
+    State(state): State<AdminState>,
+    Json(payload): Json<PollDeviceLoginRequest>,
+) -> impl IntoResponse {
+    match state
+        .service
+        .poll_social_login(&payload.session_id, &payload.redirect_response)
+        .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(e) => (e.status_code(), Json(e.into_response())).into_response(),
+    }
+}

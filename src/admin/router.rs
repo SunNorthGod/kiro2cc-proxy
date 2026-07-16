@@ -18,7 +18,7 @@ use super::{
         add_credential, delete_credential, get_all_credentials, get_auth_keys,
         get_credential_balance, get_load_balancing_mode, poll_device_login, reset_failure_count,
         set_auth_keys, set_credential_disabled, set_credential_priority, set_load_balancing_mode,
-        start_device_login, update_credential,
+        start_device_login, start_social_login, poll_social_login, update_credential,
     },
     log_handler::{download_logs, snapshot_logs, stream_logs},
     middleware::{AdminState, admin_auth_middleware},
@@ -41,6 +41,8 @@ pub fn create_admin_router(state: AdminState) -> Router {
         )
         .route("/device-login/start", post(start_device_login))
         .route("/device-login/poll", post(poll_device_login))
+        .route("/social-login/start", post(start_social_login))
+        .route("/social-login/poll", post(poll_social_login))
         .route("/credentials/{id}/disabled", post(set_credential_disabled))
         .route("/credentials/{id}/priority", post(set_credential_priority))
         .route("/credentials/{id}/reset", post(reset_failure_count))

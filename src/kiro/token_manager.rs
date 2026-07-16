@@ -935,6 +935,80 @@ async fn create_token_authcode(
 }
 
 // ============================================================================
+// Social 登录（Kiro 托管登录页 app.kiro.dev/signin，支持 Google/GitHub/Microsoft 等）
+// ============================================================================
+
+/// Kiro social 登录托管页。用户在此选择社交/企业身份提供方完成登录。
+const SOCIAL_SIGNIN_URL: &str = "https://app.kiro.dev/signin";
+
+/// Social 登录回调地址：与真实 Kiro 客户端一致（IDE 本地监听此端口）。
+/// 面板无需真正监听——用户完成登录后浏览器会跳到
+/// `http://localhost:3128/?code=...&state=...`（显示无法连接是正常的），
+/// 用户把地址栏 URL（或其中 code）粘贴回面板即可。授权与换 token 的 redirectUri 必须完全一致。
+const SOCIAL_REDIRECT_URI: &str = "http://localhost:3128";
+
+/// 构造 social 登录的 authorize URL（app.kiro.dev/signin，PKCE，无 client_id）。
+fn build_social_authorize_url(state: &str, code_challenge: &str) -> String {
+    let enc = |s: &str| urlencoding::encode(s).into_owned();
+    format!(
+        "{}?state={}&code_challenge={}&code_challenge_method=S256&redirect_uri={}&redirect_from=KiroIDE",
+        SOCIAL_SIGNIN_URL,
+        enc(state),
+        enc(code_challenge),
+        enc(SOCIAL_REDIRECT_URI),
+    )
+}
+
+/// Social /oauth/token 响应（camelCase，与 refreshToken 同族服务）。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocialTokenResponse {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+}
+
+/// 用授权码 + PKCE verifier 换取 social token，返回 (accessToken, refreshToken)。
+///
+/// 端点 `POST https://prod.{region}.auth.desktop.kiro.dev/oauth/token`，
+/// **form-urlencoded**，字段 camelCase：grantType / code / codeVerifier / redirectUri。
+async fn create_token_social(
+    config: &Config,
+    region: &str,
+    code: &str,
+    code_verifier: &str,
+    proxy: Option<&ProxyConfig>,
+) -> anyhow::Result<(Option<String>, String)> {
+    let url = format!("https://prod.{}.auth.desktop.kiro.dev/oauth/token", region);
+    let client = build_client(proxy, 30, config.tls_backend)?;
+    let form = [
+        ("grantType", "authorization_code"),
+        ("code", code),
+        ("codeVerifier", code_verifier),
+        ("redirectUri", SOCIAL_REDIRECT_URI),
+    ];
+    let resp = client
+        .post(&url)
+        .header("Accept", "application/json, text/plain, */*")
+        .header("User-Agent", format!("KiroIDE-{}", config.kiro_version))
+        .form(&form)
+        .send()
+        .await?;
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    if !status.is_success() {
+        bail!("Social 换取 token 失败: {} {}", status, text);
+    }
+    let data: SocialTokenResponse = serde_json::from_str(&text)
+        .map_err(|e| anyhow::anyhow!("解析 social token 响应失败: {} 原始: {}", e, text.chars().take(200).collect::<String>()))?;
+    let refresh_token = data
+        .refresh_token
+        .ok_or_else(|| anyhow::anyhow!("Social 换取 token 未返回 refreshToken，原始响应: {}", text.chars().take(200).collect::<String>()))?;
+    Ok((data.access_token, refresh_token))
+}
+
+// ============================================================================
 // 多账号 Token 管理器
 // ============================================================================
 
@@ -1153,6 +1227,8 @@ pub struct MultiTokenManager {
     profile_arn_attempted: Mutex<std::collections::HashMap<u64, std::time::Instant>>,
     /// 进行中的设备授权登录会话（sessionId -> 会话）
     device_login_sessions: Mutex<HashMap<String, DeviceLoginSession>>,
+    /// 进行中的 Social 登录会话（sessionId -> 会话）
+    social_login_sessions: Mutex<HashMap<String, SocialLoginSession>>,
 }
 
 /// 进行中的设备授权登录会话
@@ -1164,6 +1240,17 @@ struct DeviceLoginSession {
     region: String,
     start_url: String,
     /// 用户提供的账号名称 / 备注（用于登录成功后标记账号）
+    name: Option<String>,
+    created_at: Instant,
+    expires_in: i64,
+}
+
+/// 进行中的 Social 登录会话（app.kiro.dev/signin，无 client_id/client_secret）
+struct SocialLoginSession {
+    code_verifier: String,
+    state: String,
+    region: String,
+    /// 用户提供的账号名称 / 备注
     name: Option<String>,
     created_at: Instant,
     expires_in: i64,
@@ -1342,6 +1429,7 @@ impl MultiTokenManager {
             persist_lock: Mutex::new(()),
             profile_arn_attempted: Mutex::new(std::collections::HashMap::new()),
             device_login_sessions: Mutex::new(HashMap::new()),
+            social_login_sessions: Mutex::new(HashMap::new()),
         };
 
         // 如果有新分配的 ID 或新生成的 machineId，立即持久化到配置文件
@@ -3069,6 +3157,155 @@ impl MultiTokenManager {
             None
         } else {
             Some("账号已添加，但 Kiro Profile 初始化暂未完成，稍后会自动重试验活".to_string())
+        };
+        Ok(DeviceLoginPollResponse {
+            status: "complete".to_string(),
+            credential_id: Some(credential_id),
+            message: None,
+            profile_status: Some(profile_status.to_string()),
+            warning,
+        })
+    }
+
+    /// 发起 Social 登录（app.kiro.dev/signin，支持 Google/GitHub/Microsoft 等）。
+    ///
+    /// 生成 PKCE + state，返回托管登录页 URL。用户在浏览器完成登录后会被重定向到
+    /// `http://localhost:3128/?code=...&state=...`（显示无法连接是正常的），把该 URL
+    /// 或其中的 code 粘贴回来调用 `poll_social_login` 换取 refreshToken 并建号。
+    pub async fn start_social_login(
+        &self,
+        region: Option<String>,
+        name: Option<String>,
+    ) -> anyhow::Result<crate::admin::types::DeviceLoginStartResponse> {
+        let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+        // social 登录页是全局的；region 仅决定 token 换取/刷新所属节点，默认取全局配置。
+        let region = region
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty() && r != "auto")
+            .unwrap_or_else(|| self.config.region.clone());
+
+        let (code_verifier, code_challenge) = generate_pkce();
+        let state = uuid::Uuid::new_v4().to_string();
+        let authorize_url = build_social_authorize_url(&state, &code_challenge);
+
+        let expires_in: i64 = 900;
+        let session_id = uuid::Uuid::new_v4().to_string();
+        {
+            let mut sessions = self.social_login_sessions.lock();
+            sessions
+                .retain(|_, s| s.created_at.elapsed().as_secs() < s.expires_in.max(0) as u64 + 60);
+            sessions.insert(
+                session_id.clone(),
+                SocialLoginSession {
+                    code_verifier,
+                    state,
+                    region,
+                    name,
+                    created_at: Instant::now(),
+                    expires_in,
+                },
+            );
+        }
+
+        Ok(crate::admin::types::DeviceLoginStartResponse {
+            session_id,
+            authorize_url,
+            expires_in,
+        })
+    }
+
+    /// 完成 Social 登录：用粘贴回来的 code 换取 refreshToken，建号（authMethod=social）。
+    pub async fn poll_social_login(
+        &self,
+        session_id: &str,
+        redirect_response: &str,
+    ) -> anyhow::Result<crate::admin::types::DeviceLoginPollResponse> {
+        use crate::admin::types::DeviceLoginPollResponse;
+
+        let err = |m: String| DeviceLoginPollResponse {
+            status: "error".to_string(),
+            credential_id: None,
+            message: Some(m),
+            profile_status: None,
+            warning: None,
+        };
+
+        let (code_verifier, expected_state, region, name) = {
+            let sessions = self.social_login_sessions.lock();
+            match sessions.get(session_id) {
+                Some(s) => (
+                    s.code_verifier.clone(),
+                    s.state.clone(),
+                    s.region.clone(),
+                    s.name.clone(),
+                ),
+                None => anyhow::bail!("登录会话不存在或已过期"),
+            }
+        };
+
+        let (code, state_opt) = parse_auth_code(redirect_response);
+        let code = match code {
+            Some(c) if !c.is_empty() => c,
+            _ => {
+                return Ok(err(
+                    "未能从粘贴内容中解析出授权码 code，请粘贴完整的回调 URL 或 code".to_string(),
+                ));
+            }
+        };
+        if let Some(st) = state_opt {
+            if st != expected_state {
+                return Ok(err(
+                    "state 不匹配（可能粘贴了旧的链接），请重新发起登录".to_string(),
+                ));
+            }
+        }
+
+        let proxy = self.proxy.clone();
+        let refresh_token =
+            match create_token_social(&self.config, &region, &code, &code_verifier, proxy.as_ref())
+                .await
+            {
+                Ok((_access, refresh)) => refresh,
+                Err(e) => return Ok(err(format!("换取 token 失败：{}", e))),
+            };
+
+        let new_cred = KiroCredentials {
+            refresh_token: Some(refresh_token),
+            auth_method: Some("social".to_string()),
+            region: Some(region),
+            email: name.clone(),
+            nickname: name,
+            ..Default::default()
+        };
+        let credential_id = self.add_credential(new_cred).await?;
+        self.social_login_sessions.lock().remove(session_id);
+
+        // social 账号的 profileArn 由刷新响应带回（add_credential 已刷新验证）；再做一次额度探测确认可用。
+        let mut profile_status = "pending";
+        for (i, delay_ms) in [0u64, 1500, 3000].iter().enumerate() {
+            if *delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+            }
+            self.profile_arn_attempted.lock().remove(&credential_id);
+            match self.get_usage_limits_for(credential_id).await {
+                Ok(_) => {
+                    profile_status = "ready";
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Social 账号 #{} 登录后第 {} 次额度探测未就绪: {}",
+                        credential_id,
+                        i + 1,
+                        e
+                    );
+                }
+            }
+        }
+        let warning = if profile_status == "ready" {
+            None
+        } else {
+            Some("账号已添加，但额度校验暂未完成，稍后会自动重试".to_string())
         };
         Ok(DeviceLoginPollResponse {
             status: "complete".to_string(),

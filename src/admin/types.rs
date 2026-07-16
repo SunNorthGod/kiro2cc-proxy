@@ -478,6 +478,18 @@ pub struct DeviceLoginStartResponse {
     pub expires_in: i64,
 }
 
+/// 发起 Social 登录请求（app.kiro.dev，无需门户地址）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartSocialLoginRequest {
+    /// 区域（可选，默认使用全局配置；仅决定 token 换取/刷新节点）
+    #[serde(default)]
+    pub region: Option<String>,
+    /// 账号名称 / 备注（可选）
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// 完成授权码登录请求
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]

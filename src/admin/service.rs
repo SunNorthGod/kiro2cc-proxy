@@ -17,7 +17,7 @@ use super::types::{
     AddCredentialRequest, AddCredentialResponse, BalanceResponse, CredentialStatusItem,
     CredentialsStatusResponse, DeviceLoginPollResponse, DeviceLoginStartResponse,
     LoadBalancingModeResponse, SetLoadBalancingModeRequest, StartDeviceLoginRequest,
-    UpdateCredentialRequest,
+    StartSocialLoginRequest, UpdateCredentialRequest,
 };
 
 /// 余额缓存过期时间（秒），5 分钟
@@ -301,6 +301,29 @@ impl AdminService {
     ) -> Result<DeviceLoginPollResponse, AdminServiceError> {
         self.token_manager
             .poll_device_login(session_id, redirect_response)
+            .await
+            .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
+    }
+
+    /// 发起 Social 登录（app.kiro.dev，支持 Google/GitHub/Microsoft 等）
+    pub async fn start_social_login(
+        &self,
+        req: StartSocialLoginRequest,
+    ) -> Result<DeviceLoginStartResponse, AdminServiceError> {
+        self.token_manager
+            .start_social_login(req.region, req.name)
+            .await
+            .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
+    }
+
+    /// 完成 Social 登录：用粘贴回来的 code 换取 refreshToken 并建号
+    pub async fn poll_social_login(
+        &self,
+        session_id: &str,
+        redirect_response: &str,
+    ) -> Result<DeviceLoginPollResponse, AdminServiceError> {
+        self.token_manager
+            .poll_social_login(session_id, redirect_response)
             .await
             .map_err(|e| AdminServiceError::UpstreamError(e.to_string()))
     }
